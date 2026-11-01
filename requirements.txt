@@ -1,0 +1,18 @@
+# API
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# Datos
+sqlalchemy>=2.0
+psycopg[binary]>=3.2        # Postgres (Supabase); local usa SQLite sin driver extra
+pydantic>=2.7
+pydantic-settings>=2.3
+
+# Ingesta
+trafilatura>=1.9
+feedparser>=6.0
+httpx>=0.27
+python-dotenv>=1.0
+
+# LLM (filtro de politicidad; síntesis en Fase 3)
+google-genai>=1.0

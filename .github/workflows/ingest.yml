@@ -1,0 +1,68 @@
+# Cron de ingesta + trigger manual (workflow_dispatch).
+#
+# Secrets requeridos en el repo:
+#   DATABASE_URL     — URL del Session Pooler de Supabase (postgresql+psycopg://…)
+#   GEMINI_API_KEY   — para el filtro de politicidad (opcional; sin ella se salta)
+# Variables opcionales:
+#   CLASSIFIER_MODE / CLASSIFIER_API_URL — cuando exista el servicio de IdeoGraphCO
+
+name: Ingesta de noticias
+
+on:
+  schedule:
+    # Minuto raro a propósito: los :00 son los más congestionados en Actions
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      max_per_source:
+        description: "Máximo de artículos por fuente"
+        default: "5"
+        required: false
+      sources:
+        description: "Fuentes puntuales separadas por espacio (vacío = todas)"
+        default: ""
+        required: false
+      no_filter:
+        description: "Saltar filtro LLM de politicidad"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Correr ingesta
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CLASSIFIER_MODE: ${{ vars.CLASSIFIER_MODE || 'mock' }}
+          CLASSIFIER_API_URL: ${{ vars.CLASSIFIER_API_URL || '' }}
+          # Los inputs pasan por env (no interpolados en el script) para
+          # evitar inyección de comandos vía workflow_dispatch.
+          INPUT_MAX_PER_SOURCE: ${{ github.event.inputs.max_per_source || '5' }}
+          INPUT_SOURCES: ${{ github.event.inputs.sources || '' }}
+          INPUT_NO_FILTER: ${{ github.event.inputs.no_filter || 'false' }}
+        run: |
+          ARGS=(--max-per-source "$INPUT_MAX_PER_SOURCE")
+          if [ -n "$INPUT_SOURCES" ]; then
+            read -ra SOURCES_ARR <<< "$INPUT_SOURCES"
+            ARGS+=(--sources "${SOURCES_ARR[@]}")
+          fi
+          if [ "$INPUT_NO_FILTER" = "true" ]; then
+            ARGS+=(--no-filter)
+          fi
+          python scripts/ingest.py "${ARGS[@]}"
