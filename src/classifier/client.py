@@ -1,10 +1,11 @@
 """Cliente del clasificador ideológico.
 
-El clasificador NO vive en este repo: es el modelo de la tesis (repo
-IdeoGraphCO) expuesto como servicio. Aquí solo se consume, detrás de una
-interfaz para poder desarrollar sin el servicio (modo mock).
+El modelo se entrena en el repo IdeoGraphCO y se sirve desde `inference/`
+de este repo, como un servicio aparte (necesita PyTorch). Aquí solo se
+consume, detrás de una interfaz para poder desarrollar sin el servicio
+(modo mock).
 
-Contrato esperado del servicio real (a acordar con IdeoGraphCO):
+Contrato del servicio (inference/api.py):
     POST {CLASSIFIER_API_URL}/classify
     body:     {"title": str, "text": str}
     respuesta: {"label": str, "probabilities": {clase: float x8}, "model_version": str}

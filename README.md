@@ -13,7 +13,7 @@ GitHub Actions (cron cada 6h + botón manual "Run workflow")
         │  scripts/ingest.py
         ▼
 Ingesta: RSS/sitemaps de medios CO → trafilatura → limpieza → filtro
-politicidad (Gemini) → clasificador (servicio IdeoGraphCO) → Postgres
+politicidad (Gemini) → clasificador (servicio inference/) → Postgres
         │
         ▼
 Supabase Postgres (stories + articles)
@@ -44,7 +44,7 @@ uvicorn src.api.app:app --reload --port 8000
 # → http://localhost:8000/api/v1/stories  ·  /docs para el swagger
 
 # Tests y lint
-pytest && ruff check src tests scripts
+pytest && ruff check src tests scripts inference
 ```
 
 ## Pipeline de ingesta
@@ -85,8 +85,40 @@ pytest && ruff check src tests scripts
 3. **API en Hugging Face Spaces** (Docker Space con
    `uvicorn src.api.app:app --host 0.0.0.0 --port 7860`), env
    `DATABASE_URL` + `CORS_ORIGINS` con el dominio del FE.
-4. Cuando exista el servicio de inferencia de IdeoGraphCO: variables
-   `CLASSIFIER_MODE=http` y `CLASSIFIER_API_URL`.
+4. Servicio de inferencia (sección siguiente) en otro host con PyTorch;
+   la ingesta lo usa con `CLASSIFIER_MODE=http` y `CLASSIFIER_API_URL`.
+
+## Servicio de inferencia
+
+`inference/` sirve el clasificador entrenado en el repo IdeoGraphCO. Va
+aparte de la API de lectura porque necesita PyTorch (`inference/requirements.txt`,
+con las mismas versiones del entrenamiento).
+
+```bash
+# 1. Exportar el checkpoint de Lightning a un artefacto autodescrito (~420 MB)
+python -m inference.export_checkpoint \
+    --checkpoint ../IdeoGraphCO/logs/checkpoints/cribado/beto__seed42/best.ckpt \
+    --metrics ../IdeoGraphCO/logs/benchmark/cribado/beto__seed42/metrics.json \
+    --model-version beto-cribado-s42 --out models/beto-cribado-s42
+
+# 2. Levantar el servicio
+IDEOGRAPH_ARTIFACT=models/beto-cribado-s42 uvicorn inference.api:app --port 8080
+
+# 3. Ingestar clasificando con el modelo real
+CLASSIFIER_MODE=http CLASSIFIER_API_URL=http://localhost:8080 \
+    python scripts/ingest.py --sources lasillavacia --max-per-source 2 --no-filter
+```
+
+El artefacto guarda el troceo y el orden de clases del checkpoint, y el
+predictor verifica el orden contra `src/core/schema.py` al cargar
+(reglas 1 y 3 de `docs/traspaso-inferencia-BE.md` en IdeoGraphCO). La
+entrada se compone con `inference/model_input.py`, copia literal de la del
+entrenamiento (regla 2). `models/` no se versiona.
+
+**Modelo provisional:** `beto-cribado-s42` es BETO del cribado (una
+semilla, 5.000 artículos de entrenamiento, F1 Macro de validación 0,752).
+Sirve para construir el prototipo; se reemplaza exportando el modelo
+seleccionado del benchmark oficial con otra `--model-version`.
 
 ## Roadmap
 
