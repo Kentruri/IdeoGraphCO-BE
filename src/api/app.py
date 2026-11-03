@@ -1,5 +1,7 @@
 """Aplicación FastAPI (solo lectura: la escritura ocurre en el cron).
 
+La única ruta POST, /api/v1/classify, clasifica un texto sin guardarlo.
+
 Arranque local:
     uvicorn src.api.app:app --reload --port 8000
 """
@@ -9,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import health, stories
+from src.api.routes import classify, health, stories
 from src.config import APP_VERSION, get_settings
 from src.db.session import init_db
 
@@ -34,11 +36,12 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST"],
         allow_headers=["*"],
     )
     app.include_router(health.router)
     app.include_router(stories.router)
+    app.include_router(classify.router)
     return app
 
 

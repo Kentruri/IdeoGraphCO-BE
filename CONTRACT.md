@@ -98,6 +98,19 @@ Detalle completo. Los errores usan el formato estándar de FastAPI:
 
 `{ "status": "ok", "version": "0.1.0" }`
 
+### `POST /api/v1/classify`
+
+Mesa de redacción: clasifica un texto pegado por el usuario **sin
+guardarlo**. Usa el mismo clasificador que la ingesta (`CLASSIFIER_MODE`).
+
+```jsonc
+// request
+{ "title": "…",   // opcional (máx. 300); el modelo se entrenó con titular + cuerpo
+  "text": "…" }   // 40 a 30.000 caracteres
+// 200 → ClassificationDTO
+// 422 → texto fuera de rango · 503 → clasificador no disponible ({ "detail": "…" })
+```
+
 ## Reglas de renderizado para el FE
 
 1. El cuerpo principal del detalle es `synthesized.body` si existe; si es
