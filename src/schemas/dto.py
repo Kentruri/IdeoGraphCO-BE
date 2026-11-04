@@ -4,6 +4,7 @@ snake_case intencional: es el formato que viaja por la API.
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +24,25 @@ class ClassificationDTO(BaseModel):
 class ClassifyRequestDTO(BaseModel):
     title: str = Field("", max_length=300)
     text: str = Field(min_length=CLASSIFY_MIN_TEXT_CHARS, max_length=CLASSIFY_MAX_TEXT_CHARS)
+
+
+class ClassifyResponseDTO(ClassificationDTO):
+    # Filtro de politicidad (opcional):
+    # "disabled": sin GEMINI_API_KEY no hay filtro; se confía en el usuario.
+    # "passed": el filtro confirmó que es una noticia política colombiana.
+    # "unavailable": hay clave pero el filtro falló; se clasificó sin él.
+    political_filter: Literal["disabled", "passed", "unavailable"]
+
+
+class NotPoliticalErrorDTO(BaseModel):
+    """422 de /classify cuando el filtro dice que el texto no es del dominio."""
+
+    detail: str
+    code: Literal["not_political"] = "not_political"
+    # nonpolitical_article | biography_static | garbage
+    category: str
+    confidence: float | None
+    reason: str
 
 
 class StoryListItemDTO(BaseModel):

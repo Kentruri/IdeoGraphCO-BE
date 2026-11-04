@@ -74,6 +74,7 @@ pytest && ruff check src tests scripts inference
 | `GET /api/v1/stories?page&page_size&source_category&q` | Listado paginado (solo publicadas) |
 | `GET /api/v1/stories/{slug}` | Detalle: representativo + `synthesized` (nullable) + `sources[]` |
 | `GET /api/v1/health` | Health check |
+| `POST /api/v1/classify` | Mesa de redacción: clasifica sin guardar. Con `GEMINI_API_KEY` pasa antes por el filtro de politicidad (422 `not_political` si no es del dominio); sin ella, confía en el usuario |
 
 ## Despliegue gratuito
 
@@ -84,7 +85,8 @@ pytest && ruff check src tests scripts inference
    de noticias* → *Run workflow*). Secrets: `DATABASE_URL`, `GEMINI_API_KEY`.
 3. **API en Hugging Face Spaces** (Docker Space con
    `uvicorn src.api.app:app --host 0.0.0.0 --port 7860`), env
-   `DATABASE_URL` + `CORS_ORIGINS` con el dominio del FE.
+   `DATABASE_URL` + `CORS_ORIGINS` con el dominio del FE. `GEMINI_API_KEY`
+   es opcional: activa el filtro de politicidad de la mesa de redacción.
 4. Servicio de inferencia (sección siguiente) en otro host con PyTorch;
    la ingesta lo usa con `CLASSIFIER_MODE=http` y `CLASSIFIER_API_URL`.
 

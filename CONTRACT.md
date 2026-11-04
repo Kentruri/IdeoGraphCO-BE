@@ -1,4 +1,4 @@
-# Contrato BE ↔ FE — v2 (2026-07-29)
+# Contrato BE ↔ FE — v2 (2026-07-29; `/classify` con filtro de dominio, 2026-11-04)
 
 Contrato de datos entre **IdeoGraphCO-BE** (este repo) e **IdeoGraphCO-FE**.
 Todos los campos van en `snake_case`. Fechas en ISO 8601 con zona horaria.
@@ -103,13 +103,43 @@ Detalle completo. Los errores usan el formato estándar de FastAPI:
 Mesa de redacción: clasifica un texto pegado por el usuario **sin
 guardarlo**. Usa el mismo clasificador que la ingesta (`CLASSIFIER_MODE`).
 
+**Filtro de dominio opcional.** El modelo se entrenó solo con noticias
+políticas colombianas. Si el BE tiene `GEMINI_API_KEY`, antes de clasificar
+el texto pasa por el **mismo filtro de politicidad de la ingesta**
+(`src/ingestion/political_filter.py`: Gemini 2.5 Flash-Lite, que escala a
+Flash si su confianza es < 0,7; solo el cuerpo, recortado a 3.000
+caracteres). Tres casos:
+
+| Caso | Qué hace | `political_filter` |
+|---|---|---|
+| Sin `GEMINI_API_KEY` (lo normal hoy) | No llama a ningún LLM: se confía en el usuario y se clasifica todo texto de 40 a 30.000 caracteres. Un aviso al arrancar en el log. | `"disabled"` |
+| Con clave, el filtro acepta el texto | Clasifica. | `"passed"` |
+| Con clave, el filtro no lo acepta | **No** clasifica: 422 `not_political`. | — |
+| Con clave, el filtro falla (cuota, caído, respuesta ilegible) | Clasifica igual, sin bloquear (un solo intento, sin esperas); aviso en el log. | `"unavailable"` |
+
 ```jsonc
 // request
 { "title": "…",   // opcional (máx. 300); el modelo se entrenó con titular + cuerpo
   "text": "…" }   // 40 a 30.000 caracteres
-// 200 → ClassificationDTO
-// 422 → texto fuera de rango · 503 → clasificador no disponible ({ "detail": "…" })
+
+// 200 → ClassificationDTO + political_filter
+{ "label": "institucionalismo", "probabilities": { /* 8 clases */ },
+  "model_version": "beto-cribado-s42",
+  "political_filter": "disabled" }   // "disabled" | "passed" | "unavailable" (ver tabla)
+
+// 422 not_political → solo con clave: el filtro dice que no es una noticia política colombiana
+{ "detail": "El texto no parece una noticia política colombiana; …",
+  "code": "not_political",
+  "category": "nonpolitical_article",  // nonpolitical_article | biography_static | garbage
+  "confidence": 0.97,                  // nullable
+  "reason": "Receta de cocina" }       // ≤ 12 palabras, la escribe el filtro
+
+// 422 de validación (texto fuera de rango) → formato estándar de FastAPI,
+//     { "detail": [ … ] } sin `code`
+// 503 → clasificador no disponible ({ "detail": "…" })
 ```
+
+El FE distingue los dos 422 por `code === "not_political"`.
 
 ## Reglas de renderizado para el FE
 
