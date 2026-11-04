@@ -120,6 +120,52 @@ semilla, 5.000 artículos de entrenamiento, F1 Macro de validación 0,752).
 Sirve para construir el prototipo; se reemplaza exportando el modelo
 seleccionado del benchmark oficial con otra `--model-version`.
 
+### Cambiar de modelo y reclasificar lo guardado
+
+Cada artículo guarda la `model_version` que emitió su clasificación, y la
+ingesta solo clasifica artículos nuevos o pendientes. Al cambiar de modelo,
+lo ya guardado se pone al día con `scripts/reclasificar.py`:
+
+```bash
+# 1. Exportar el modelo elegido con una versión NUEVA (es lo que distingue
+#    lo viejo de lo nuevo; nunca reutilizar una --model-version)
+python -m inference.export_checkpoint \
+    --checkpoint ../IdeoGraphCO/logs/checkpoints/<experimento>/<modelo>/best.ckpt \
+    --metrics ../IdeoGraphCO/logs/benchmark/<experimento>/<modelo>/metrics.json \
+    --model-version <modelo-final> --out models/<modelo-final>
+
+# 2. Servirlo (reiniciar el servicio con el artefacto nuevo)
+IDEOGRAPH_ARTIFACT=models/<modelo-final> uvicorn inference.api:app --port 8080
+
+# 3. Contar cuánto hay que reclasificar (no llama al modelo ni cambia nada)
+CLASSIFIER_MODE=http CLASSIFIER_API_URL=http://localhost:8080 \
+    python scripts/reclasificar.py --dry-run
+
+# 4. Reclasificar
+CLASSIFIER_MODE=http CLASSIFIER_API_URL=http://localhost:8080 \
+    python scripts/reclasificar.py
+```
+
+El comando le pregunta al servicio su versión (`GET /health`), toma los
+artículos clasificados con cualquier otra y los vuelve a clasificar con el
+mismo cliente de la ingesta, guardando clase, distribución y versión nueva.
+Las stories publicadas muestran de inmediato la clasificación nueva de su
+representativo. Al final informa cuántos cambiaron de clase y entre cuáles.
+
+- **Por lotes y retomable**: guarda cada lote (`--batch-size`, 50 por
+  defecto); si se corta, al volver a correrlo sigue con lo que falta.
+  `--limit N` reparte el trabajo en varias corridas.
+- **Fallos**: si el servicio no responde para un artículo, este conserva su
+  clasificación anterior (la story sigue publicada) y queda para la próxima
+  corrida; con 3 fallos seguidos se detiene. Si el servicio cambia de modelo
+  a mitad de corrida, también se detiene sin mezclar versiones.
+- **Pendientes**: los artículos sin clasificar no los toca; los reintenta la
+  ingesta.
+- Sale con código 1 si se detuvo o quedaron fallos, y 0 si terminó.
+
+Con el mock (`CLASSIFIER_MODE=mock`, versión `mock-0.1.0`) se puede probar
+sin el servicio: reclasifica todo lo que no esté en `mock-0.1.0`.
+
 ## Roadmap
 
 - **Fase 2 — Triangulación**: clustering de "misma historia" (embeddings de
