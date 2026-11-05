@@ -12,7 +12,9 @@ from src.schemas.dto import (
 )
 
 SYNTH_DISCLAIMER_TEMPLATE = (
-    "Resumen generado automáticamente por IA a partir de {n} fuentes; puede contener errores."
+    "Texto sintético generado por IA a partir de {n} medios que cubrieron el mismo "
+    "hecho, para ofrecer un encuadre más balanceado. Solo usa información de esas "
+    "fuentes, pero puede contener errores: contraste con los originales."
 )
 
 
@@ -79,6 +81,17 @@ def to_source_dto(article: Article) -> SourceArticleDTO:
     )
 
 
+def _synthesis_classification(story: Story) -> ClassificationDTO | None:
+    data = story.synthesized_classification
+    if not data or not data.get("label") or not data.get("probabilities"):
+        return None
+    return ClassificationDTO(
+        label=data["label"],
+        probabilities=data["probabilities"],
+        model_version=data.get("model_version") or "unknown",
+    )
+
+
 def to_detail(story: Story) -> StoryDetailDTO:
     base = to_list_item(story)
     synthesized = None
@@ -91,6 +104,7 @@ def to_detail(story: Story) -> StoryDetailDTO:
             model=story.synthesized_model or "unknown",
             generated_at=story.synthesized_at,
             disclaimer=SYNTH_DISCLAIMER_TEMPLATE.format(n=len(story.articles)),
+            classification=_synthesis_classification(story),
         )
     return StoryDetailDTO(
         **base.model_dump(),

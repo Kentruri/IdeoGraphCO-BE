@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # pasa el texto por el filtro. Con escalado son hasta dos llamadas.
     classify_filter_timeout_seconds: float = 10.0
 
+    # Triangulación (src/triangulation): síntesis neutral con ≥N medios del
+    # mismo hecho. Sin GEMINI_API_KEY se agrupa pero no se sintetiza.
+    synthesis_model: str = "gemini-2.5-flash"
+    synthesis_min_sources: int = 3
+
     # Clasificador ideológico externo (repo IdeoGraphCO).
     classifier_mode: Literal["mock", "http", "off"] = "mock"
     classifier_api_url: str = ""

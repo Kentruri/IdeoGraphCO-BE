@@ -50,6 +50,10 @@ DEFAULT_SOCKET_TIMEOUT_SECONDS = 20
 # se desactiva el filtro por el resto de la corrida en vez de quemar
 # 3 reintentos × 60s por CADA artículo restante.
 FILTER_CIRCUIT_BREAKER_FAILURES = 3
+# Fuentes que bloquean al extractor (HTML vacío, protección anti-bots) hacen
+# esperar ~30 s por candidata; tras N fallos seguidos se pasa a la siguiente
+# fuente en vez de gastar la corrida entera en un sitio que no responde.
+SOURCE_CONSECUTIVE_FAILURES_LIMIT = 5
 
 SKIP_REASON_NOT_POLITICAL = "not_political"
 SKIP_REASON_DUPLICATE_CONTENT = "duplicate_content"
@@ -296,6 +300,14 @@ def run_ingest(
             if data is None or not data["title"]:
                 stats.extraction_failed += 1
                 consecutive_errors += 1
+                if consecutive_errors >= SOURCE_CONSECUTIVE_FAILURES_LIMIT:
+                    logger.warning(
+                        "%s: %d extracciones fallidas seguidas, se pasa a la siguiente fuente",
+                        name,
+                        consecutive_errors,
+                    )
+                    stats.errors.append(f"{name}: extracción bloqueada")
+                    break
                 adaptive_sleep(consecutive_errors)
                 continue
             consecutive_errors = 0
@@ -362,6 +374,85 @@ def run_ingest(
 
     retry_pending_classifications(session, classifier, stats)
     logger.info("Ingesta terminada: %s", stats.summary())
+    return stats
+
+
+def ingest_urls(
+    session: Session,
+    settings: Settings,
+    classifier: ClassifierClient,
+    candidates: list[dict],
+    *,
+    use_filter: bool = True,
+    gemini_client=None,
+) -> IngestStats:
+    """Ingesta puntual de URLs ya elegidas (búsqueda dirigida de la triangulación).
+
+    `candidates`: dicts con url, source_name, category y rss_published_at.
+    Mismos pasos que `run_ingest` (robots, extracción, duplicados, filtro de
+    politicidad y clasificación), sin descubrimiento ni tope por fuente.
+    """
+    import time as _time
+
+    from src.ingestion.political_filter import is_political_article
+
+    stats = IngestStats()
+    socket.setdefaulttimeout(DEFAULT_SOCKET_TIMEOUT_SECONDS)
+    if use_filter and gemini_client is None:
+        if settings.gemini_api_key:
+            from google import genai
+
+            gemini_client = genai.Client(api_key=settings.gemini_api_key)
+        else:
+            use_filter = False
+    last_filter_call = 0.0
+
+    for candidate in candidates:
+        url = candidate["url"]
+        stats.discovered += 1
+        if _url_exists(session, url) or _url_skipped(session, url):
+            stats.skipped_existing += 1
+            continue
+        if not is_url_allowed(url):
+            stats.skipped_robots += 1
+            continue
+        data = extract_article(url, candidate["source_name"], candidate["category"])
+        if data is None or not data["title"]:
+            stats.extraction_failed += 1
+            continue
+        if _content_exists(session, compute_content_hash(data["text"])):
+            stats.skipped_duplicate_content += 1
+            _mark_skipped(session, url, SKIP_REASON_DUPLICATE_CONTENT)
+            continue
+        if use_filter and gemini_client is not None:
+            elapsed = _time.monotonic() - last_filter_call
+            if elapsed < settings.filter_rate_limit_seconds:
+                _time.sleep(settings.filter_rate_limit_seconds - elapsed)
+            is_political, info = is_political_article(
+                gemini_client,
+                data["text"],
+                model=settings.filter_model,
+                escalate_model=settings.filter_escalate_model or None,
+                escalate_threshold=settings.filter_escalate_threshold,
+            )
+            last_filter_call = _time.monotonic()
+            if info is None:
+                stats.filter_failures += 1
+                continue
+            if not is_political:
+                stats.filtered_out += 1
+                _mark_skipped(session, url, SKIP_REASON_NOT_POLITICAL)
+                continue
+        try:
+            _persist_article(
+                session, data, classifier, stats,
+                rss_published_at=candidate.get("rss_published_at"),
+            )
+        except Exception as e:
+            session.rollback()
+            stats.errors.append(f"{candidate['source_name']}: persistencia falló para {url} ({e})")
+            logger.exception("Error persistiendo %s", url)
+        adaptive_sleep(0)
     return stats
 
 

@@ -17,9 +17,18 @@ para filtrar o enlazar; `source_display_name` es el nombre para mostrar
 
 - **Article**: un artículo real publicado por un medio colombiano. Cada uno
   tiene su **propia clasificación ideológica** (se ejecuta al guardarse).
-- **Story**: la unidad que se lista y se navega. Agrupa 1..5 articles que
-  cubren la misma historia. Puede tener una **noticia sintetizada** (nullable;
-  solo cuando hay ≥3 fuentes — Fase 3).
+- **Story**: la unidad que se lista y se navega. Agrupa 1..5 articles de
+  medios distintos que cubren el mismo hecho (Fase 2, automática tras cada
+  ingesta: búsqueda dirigida de coberturas en el catálogo y similitud TF-IDF
+  de titular + entradilla, ventana de 48 h, un artículo por
+  medio, y solo si al menos 3 medios cubren el hecho). Puede tener una
+  **versión triangulada** (`synthesized`, nullable):
+  un texto sintético que un LLM redacta solo con hechos de esas fuentes, cuando
+  al menos 3 medios del mismo hecho lo confirman (Fase 3).
+- La noticia **clasificada** de una story es siempre la original de su
+  representativo (el primer medio en reportar). La síntesis no la reemplaza:
+  se clasifica aparte con el mismo modelo (`synthesized.classification`) para
+  comparar encuadres.
 - El público **no ve el texto completo** de los articles originales: ve
   título + snippet + clasificación + link al medio. El único cuerpo completo
   que se publica es el de la sintética (contenido generado propio, etiquetado).
@@ -110,7 +119,11 @@ Detalle completo. Los errores usan el formato estándar de FastAPI:
     "body": ["párrafo 1", "párrafo 2"],
     "model": "gemini-2.5-flash",
     "generated_at": "2026-07-29T18:00:00Z",
-    "disclaimer": "Resumen generado automáticamente por IA a partir de 4 fuentes; puede contener errores."
+    "disclaimer": "Texto sintético generado por IA a partir de 4 medios que cubrieron el mismo hecho, …",
+    "classification": {                   // nullable: el mismo clasificador sobre la síntesis
+      "label": "conservadurismo", "probabilities": { /* 8 clases */ },
+      "model_version": "beto-cribado-s42"
+    }
   },
   "sources": [                            // SIEMPRE ≥1; cada una con su clasificación
     {
@@ -178,11 +191,14 @@ El FE distingue los dos 422 por `code === "not_political"`.
 
 ## Reglas de renderizado para el FE
 
-1. El cuerpo principal del detalle es `synthesized.body` si existe; si es
-   `null` (story de fuente única o síntesis pendiente), el FE muestra el
-   snippet de la fuente + botón "Leer en {source_display_name}" hacia `url`.
-   En la UI el medio siempre se nombra con `source_display_name`.
-2. `synthesized` siempre se muestra con su `disclaimer` visible.
+1. El cuerpo principal del detalle es siempre la noticia original: el
+   snippet del representativo + botón "Leer en {source_display_name}" hacia
+   `url`. Después va el mapa de calor de esa noticia y, si `synthesized`
+   existe, la **versión triangulada** en su propia sección (nunca en lugar de
+   la original), seguida del libro de fuentes. En la UI el medio siempre se
+   nombra con `source_display_name`.
+2. `synthesized` siempre se muestra con su `disclaimer` visible y rotulado
+   como texto sintético generado por IA.
 3. `classification` puede ser `null` en `sources[]` (clasificación pendiente);
    en el item de listado nunca es `null` (una story no se publica sin
    clasificar su representativo).

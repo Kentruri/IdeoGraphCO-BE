@@ -22,8 +22,9 @@ Supabase Postgres (stories + articles)
 FastAPI (Hugging Face Spaces) ──► IdeoGraphCO-FE (Next.js)
 ```
 
-- **stories**: la unidad navegable (agrupa 1..5 artículos de la misma
-  historia; en Fase 3 guarda la noticia sintetizada por LLM).
+- **stories**: la unidad navegable (agrupa 1..5 artículos de medios
+  distintos sobre el mismo hecho; con ≥3 guarda la versión triangulada que
+  redacta el LLM y su clasificación).
 - **articles**: cada artículo real de un medio, con su **propia**
   clasificación (label + distribución softmax de 8 clases + model_version).
 - El texto completo de los artículos es **solo interno** (clasificación /
@@ -57,15 +58,56 @@ pytest && ruff check src tests scripts inference
 2. **Dedup idempotente**: por URL (`articles.url` UNIQUE) y por hash de
    contenido (cables de agencia republicados). Re-correr el cron no duplica.
 3. **Extracción** con trafilatura + limpieza regex (CTAs, paywalls, firmas).
+   Si una fuente acumula 5 extracciones fallidas seguidas (HTML vacío,
+   protección anti-bots), la corrida pasa a la siguiente fuente.
 4. **Filtro de politicidad** (Gemini free tier, con escalado automático
    flash-lite → flash). Sin `GEMINI_API_KEY` se salta.
 5. **Clasificación ideológica** llamando al servicio externo
    (`CLASSIFIER_MODE=http`) o al mock determinista (`mock`, default). Si el
    servicio falla, el artículo queda `pending` y se reintenta en la
    siguiente corrida; la story no se publica hasta clasificar.
-6. **Persistencia**: hoy (Fase 1) cada artículo crea su story de fuente
-   única. La Fase 2 agrega el clustering multi-fuente y la Fase 3 la
-   síntesis LLM.
+6. **Persistencia**: cada artículo crea su story de fuente única; la
+   triangulación (abajo) las reúne después.
+
+## Triangulación (Fases 2 y 3)
+
+Corre sola al final de cada ingesta (`scripts/ingest.py`, también en el
+cron) y se puede lanzar aparte con `scripts/triangular.py`:
+
+0. **Buscar coberturas** (`src/triangulation/search.py`): para las noticias
+   recientes que aún no reúnen 3 medios, compara su titular con las
+   candidatas de los RSS y mapas de sitio de todo el catálogo (titular del
+   RSS o palabras del slug, sin descargar), con coseno ≥ 0,3, al menos 2
+   palabras en común, otro medio y ±72 h. Solo las que coinciden se
+   descargan y pasan por la ingesta normal (`ingest_urls`: robots, filtro de
+   politicidad y clasificación). Así la triangulación no depende de que dos
+   medios coincidan por azar en las últimas notas que trae la ingesta.
+1. **Agrupar** (`src/triangulation/clustering.py`): TF-IDF de titular (doble
+   peso) + subtítulo + entradilla (900 caracteres), coseno ≥ 0,25, ventana de
+   48 h, un artículo por medio, máximo 5, enlace medio para no encadenar
+   hechos distintos. Solo se fusionan grupos de ≥3 medios (un par suelto del
+   mismo tema no prueba que sea el mismo hecho). Los grupos existentes solo
+   crecen. La story destino es
+   la del primer medio en reportar, que sigue siendo la noticia clasificada.
+2. **Sintetizar** (`src/triangulation/synthesis.py`, Gemini 2.5 Flash): con
+   ≥3 medios, el LLM primero confirma qué fuentes tratan del mismo hecho
+   (`same_event_sources`) y redacta solo con esas: hechos de las fuentes,
+   atribución por medio, versiones contradictorias lado a lado, sin
+   adjetivos valorativos. Las fuentes que no confirme vuelven a su propia
+   story. Respuestas cortas o sin la noticia original se descartan y se
+   reintentan en la corrida siguiente.
+3. **Clasificar la síntesis** con el mismo modelo
+   (`stories.synthesized_classification`) para mostrarla junto a la
+   original, sin afirmar que sea "menos sesgada".
+
+```bash
+python scripts/triangular.py --dry-run        # coincidencias y grupos, sin tocar la BD
+python scripts/triangular.py --no-search      # solo con lo que ya está en la BD
+python scripts/triangular.py --no-synthesis   # buscar y agrupar, sin LLM
+python scripts/ingest.py --no-triangulation   # ingesta sin triangular
+```
+
+Sin `GEMINI_API_KEY` busca y agrupa, pero no filtra lo descargado ni sintetiza.
 
 ## Endpoints
 
@@ -170,12 +212,10 @@ sin el servicio: reclasifica todo lo que no esté en `mock-0.1.0`.
 
 ## Roadmap
 
-- **Fase 2 — Triangulación**: clustering de "misma historia" (embeddings de
-  título+lead, ventana 24–48h, entidades compartidas), validado contra los
-  events de Event Registry (free tokens) y una muestra manual. GDELT como
-  ampliador de fuentes.
-- **Fase 3 — Síntesis**: noticia neutral generada con Gemini a partir de
-  ≥3 fuentes, una sola vez por story, siempre etiquetada como generada por
-  IA (ver disclaimer en el contrato).
+- **Triangulación**: validar el agrupamiento contra una muestra anotada a
+  mano (precisión y cobertura de los grupos) y evaluar si embeddings o
+  entidades compartidas mejoran el TF-IDF. GDELT como ampliador de fuentes.
+- **Síntesis**: rehacerla cuando un grupo gane fuentes (hoy se borra y se
+  regenera en la corrida siguiente) y medir su fidelidad a las fuentes.
 - **Manual**: endpoint autenticado para enviar texto/URL → clasificar →
   guardar (el flujo manual del prototipo).

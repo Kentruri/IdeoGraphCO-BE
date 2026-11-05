@@ -83,11 +83,16 @@ class SourceArticleDTO(BaseModel):
 
 
 class SynthesizedDTO(BaseModel):
+    """Noticia sintética por triangulación (≥3 medios del mismo hecho)."""
+
     title: str
     body: list[str]
     model: str
     generated_at: UtcDatetime
     disclaimer: str
+    # Encuadre de la síntesis según el mismo clasificador; null si el
+    # servicio no estaba disponible al generarla.
+    classification: ClassificationDTO | None = None
 
 
 class StoryDetailDTO(StoryListItemDTO):

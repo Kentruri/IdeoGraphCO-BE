@@ -38,11 +38,15 @@ class Story(Base):
     representative_article_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     keywords: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
-    # Síntesis (Fase 3) — nullable hasta que exista y solo con ≥3 fuentes
+    # Síntesis triangulada (Fase 3, src/triangulation): nullable hasta que
+    # exista y solo con ≥3 medios del mismo hecho
     synthesized_title: Mapped[str | None] = mapped_column(Text, nullable=True)
     synthesized_body: Mapped[list | None] = mapped_column(JSON, nullable=True)  # list[str]
     synthesized_model: Mapped[str | None] = mapped_column(String(80), nullable=True)
     synthesized_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # Clasificación de la síntesis con el mismo modelo que la original
+    # ({label, probabilities, model_version}), para comparar encuadres.
+    synthesized_classification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

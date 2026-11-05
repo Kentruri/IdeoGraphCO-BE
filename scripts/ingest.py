@@ -5,6 +5,11 @@ Ejemplos:
     python scripts/ingest.py --sources eltiempo lasillavacia  # fuentes puntuales
     python scripts/ingest.py --categories nacional regional --max-per-source 3
     python scripts/ingest.py --no-filter                      # sin filtro LLM (pruebas)
+    python scripts/ingest.py --no-triangulation               # sin buscar/agrupar después
+
+Al terminar, la triangulación corre sola (src/triangulation): busca otras
+coberturas de las noticias recientes, agrupa el mismo hecho y, con ≥3 medios
+y GEMINI_API_KEY, redacta la versión triangulada.
 """
 
 import argparse
@@ -37,6 +42,9 @@ def main() -> int:
     parser.add_argument("--categories", nargs="*", default=None)
     parser.add_argument("--max-per-source", type=int, default=5)
     parser.add_argument("--no-filter", action="store_true", help="Desactiva el filtro LLM")
+    parser.add_argument(
+        "--no-triangulation", action="store_true", help="No triangular al terminar la ingesta"
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -54,6 +62,15 @@ def main() -> int:
             max_per_source=args.max_per_source,
             use_filter=not args.no_filter,
         )
+        if not args.no_triangulation:
+            from src.triangulation.pipeline import run_triangulation
+
+            try:
+                tri_stats, _groups = run_triangulation(session, settings, classifier, search=True)
+                print(f"\nTriangulación: {tri_stats.summary()}")
+            except Exception:  # noqa: BLE001 — la triangulación no tumba la ingesta
+                session.rollback()
+                logging.getLogger(__name__).exception("La triangulación falló")
     finally:
         session.close()
 
