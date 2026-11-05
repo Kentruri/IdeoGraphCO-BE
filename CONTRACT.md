@@ -1,7 +1,17 @@
-# Contrato BE ↔ FE — v2 (2026-07-29; `/classify` con filtro de dominio, 2026-11-04)
+# Contrato BE ↔ FE — v2 (2026-07-29; `/classify` con filtro de dominio y filtros del listado, 2026-11-04)
 
 Contrato de datos entre **IdeoGraphCO-BE** (este repo) e **IdeoGraphCO-FE**.
-Todos los campos van en `snake_case`. Fechas en ISO 8601 con zona horaria.
+Todos los campos van en `snake_case`.
+
+**Fechas** (`published_at`, `generated_at`): ISO 8601 **siempre en UTC con
+zona**, sufijo `Z` (`"2026-07-30T12:21:00Z"`), con SQLite y con Postgres. La
+ingesta guarda en UTC (las fechas del RSS vienen en UTC; una fecha de los
+metadatos con otro desfase se pasa a UTC; una sin zona se toma como UTC).
+El FE decide la zona en que la muestra.
+
+**Medios**: `source_name` es el slug del catálogo (`lasillavacia`), estable
+para filtrar o enlazar; `source_display_name` es el nombre para mostrar
+(`La Silla Vacía`). Si un slug ya no está en el catálogo, ambos traen el slug.
 
 ## Conceptos
 
@@ -30,11 +40,34 @@ globalismo, conservadurismo, progresismo`
 
 ## Endpoints
 
-### `GET /api/v1/stories?page=1&page_size=9&source_category=nacional&q=reforma`
+### `GET /api/v1/stories?page=1&page_size=9&source_category=nacional&ideology=populismo&published_from=2026-07-01&q=reforma`
 
 Listado paginado. Solo stories con `status = "published"`. Orden:
-`published_at DESC, id DESC`. `source_category` filtra por la categoría del
-artículo representativo; `q` busca en título/subtítulo/medio.
+`published_at DESC, id DESC`. Todos los filtros son opcionales y se combinan
+con Y; `total_items` y `total_pages` cuentan lo que queda después de filtrar.
+
+| Parámetro | Valor | Filtra |
+|---|---|---|
+| `page` | ≥ 1 (por defecto 1; si pasa de `total_pages`, se responde la última) | — |
+| `page_size` | 1 a 50 (por defecto 9) | — |
+| `source_category` | una de las 7 categorías | categoría del artículo representativo |
+| `ideology` | una o varias de las 8 clases, repitiendo el parámetro (`?ideology=populismo&ideology=progresismo`) o separadas por comas (`?ideology=populismo,progresismo`) | clase predicha (`classification.label`) del representativo; basta con que coincida una |
+| `published_from` | fecha `YYYY-MM-DD` o fecha y hora ISO 8601 | `published_at` ≥ ese límite |
+| `published_to` | fecha `YYYY-MM-DD` o fecha y hora ISO 8601 | `published_at` ≤ ese límite |
+| `q` | texto, máx. 200 caracteres | título, subtítulo o medio de cualquier artículo de la story (sin tildes ni mayúsculas) |
+
+- Un parámetro vacío (`?source_category=`, `?ideology=`, `?published_from=`)
+  se ignora. Una categoría, una clase o una fecha que no se reconoce
+  responde `400` con `{ "detail": "…" }`.
+- **Fechas.** Con solo la fecha (`2026-07-01`), el límite es ese día
+  calendario **en UTC**, completo e inclusivo: `published_from` toma sus
+  00:00 y `published_to` llega hasta sus 23:59:59.999999. Con fecha y hora
+  (`2026-07-01T05:00:00Z`, `2026-07-01T00:00:00-05:00`) se usa ese instante
+  exacto, también inclusivo; sin zona se asume UTC. En la URL, el `+` de una
+  zona se escribe `%2B`. Para filtrar por días de otra zona (p. ej. la del
+  navegador), el cliente envía los instantes de su medianoche: el FE manda
+  `published_from=<00:00 local en UTC>` y `published_to=<23:59:59.999 local en UTC>`.
+  Un rango invertido no es error: devuelve 0 resultados.
 
 ```jsonc
 {
@@ -44,10 +77,11 @@ artículo representativo; `q` busca en título/subtítulo/medio.
       "slug": "reforma-pensional-conciliacion-3fa9b2",
       "title": "…",                       // título del artículo representativo
       "subtitle": "…" ,                   // nullable
-      "source_name": "eltiempo",
+      "source_name": "eltiempo",          // slug del catálogo
+      "source_display_name": "El Tiempo", // nombre para mostrar
       "source_category": "nacional",      // nacional|independiente|regional|institucional|judicial|opinion|gremial
       "author": "…",                      // nullable
-      "published_at": "2026-07-29T13:30:00+00:00",
+      "published_at": "2026-07-29T13:30:00Z",  // UTC
       "image_url": "https://…",           // nullable
       "reading_time_minutes": 4,
       "classification": { /* ClassificationDTO */ },  // del representativo
@@ -75,19 +109,20 @@ Detalle completo. Los errores usan el formato estándar de FastAPI:
     "title": "…",
     "body": ["párrafo 1", "párrafo 2"],
     "model": "gemini-2.5-flash",
-    "generated_at": "2026-07-29T18:00:00+00:00",
+    "generated_at": "2026-07-29T18:00:00Z",
     "disclaimer": "Resumen generado automáticamente por IA a partir de 4 fuentes; puede contener errores."
   },
   "sources": [                            // SIEMPRE ≥1; cada una con su clasificación
     {
       "id": "a1b2c3d4e5f6a7b8",
       "source_name": "eltiempo",
+      "source_display_name": "El Tiempo",
       "source_category": "nacional",
       "title": "…",
       "snippet": "Primeras ~300 caracteres del artículo…",  // NUNCA el body completo
       "url": "https://www.eltiempo.com/…",   // link al artículo original
       "author": "…",                      // nullable
-      "published_at": "…",
+      "published_at": "2026-07-29T15:05:00Z",
       "classification": { /* ClassificationDTO */ }          // nullable si pending
     }
   ]
@@ -145,7 +180,8 @@ El FE distingue los dos 422 por `code === "not_political"`.
 
 1. El cuerpo principal del detalle es `synthesized.body` si existe; si es
    `null` (story de fuente única o síntesis pendiente), el FE muestra el
-   snippet de la fuente + botón "Leer en {source_name}" hacia `url`.
+   snippet de la fuente + botón "Leer en {source_display_name}" hacia `url`.
+   En la UI el medio siempre se nombra con `source_display_name`.
 2. `synthesized` siempre se muestra con su `disclaimer` visible.
 3. `classification` puede ser `null` en `sources[]` (clasificación pendiente);
    en el item de listado nunca es `null` (una story no se publica sin

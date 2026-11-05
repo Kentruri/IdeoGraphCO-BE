@@ -71,7 +71,7 @@ pytest && ruff check src tests scripts inference
 
 | Ruta | Descripción |
 |---|---|
-| `GET /api/v1/stories?page&page_size&source_category&q` | Listado paginado (solo publicadas) |
+| `GET /api/v1/stories?page&page_size&source_category&ideology&published_from&published_to&q` | Listado paginado (solo publicadas), con filtros opcionales (ver `CONTRACT.md`) |
 | `GET /api/v1/stories/{slug}` | Detalle: representativo + `synthesized` (nullable) + `sources[]` |
 | `GET /api/v1/health` | Health check |
 | `POST /api/v1/classify` | Mesa de redacción: clasifica sin guardar. Con `GEMINI_API_KEY` pasa antes por el filtro de politicidad (422 `not_political` si no es del dominio); sin ella, confía en el usuario |

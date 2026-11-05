@@ -2,6 +2,7 @@
 
 from src.core.schema import ARTICLE_CLASSIFICATION_DONE
 from src.db.models import Article, Story
+from src.ingestion.sources import source_display_name
 from src.schemas.dto import (
     ClassificationDTO,
     SourceArticleDTO,
@@ -51,6 +52,7 @@ def to_list_item(story: Story) -> StoryListItemDTO:
         title=story.title,
         subtitle=rep.subtitle,
         source_name=rep.source_name,
+        source_display_name=source_display_name(rep.source_name),
         source_category=rep.source_category,
         author=rep.author,
         published_at=story.published_at,
@@ -66,6 +68,7 @@ def to_source_dto(article: Article) -> SourceArticleDTO:
     return SourceArticleDTO(
         id=article.id,
         source_name=article.source_name,
+        source_display_name=source_display_name(article.source_name),
         source_category=article.source_category,
         title=article.title,
         snippet=article.snippet,

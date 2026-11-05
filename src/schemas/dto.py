@@ -4,9 +4,16 @@ snake_case intencional: es el formato que viaja por la API.
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+
+from src.core.dates import as_utc
+
+# Fechas del contrato: siempre ISO 8601 en UTC con zona ("…Z"). SQLite
+# devuelve las fechas sin zona y Postgres en la zona de la sesión; aquí se
+# normalizan para que el FE no las lea como hora local.
+UtcDatetime = Annotated[datetime, AfterValidator(as_utc)]
 
 # Tope del texto a clasificar: ~30.000 caracteres equivalen a los 6.270
 # tokens que el modelo alcanza a leer con 16 ventanas; lo que pase de ahí
@@ -50,10 +57,11 @@ class StoryListItemDTO(BaseModel):
     slug: str
     title: str
     subtitle: str | None
-    source_name: str
+    source_name: str  # slug del catálogo (src/ingestion/sources.py)
+    source_display_name: str  # nombre legible del medio
     source_category: str
     author: str | None
-    published_at: datetime
+    published_at: UtcDatetime
     image_url: str | None
     reading_time_minutes: int
     classification: ClassificationDTO
@@ -64,12 +72,13 @@ class StoryListItemDTO(BaseModel):
 class SourceArticleDTO(BaseModel):
     id: str
     source_name: str
+    source_display_name: str
     source_category: str
     title: str
     snippet: str
     url: str
     author: str | None
-    published_at: datetime
+    published_at: UtcDatetime
     classification: ClassificationDTO | None
 
 
@@ -77,7 +86,7 @@ class SynthesizedDTO(BaseModel):
     title: str
     body: list[str]
     model: str
-    generated_at: datetime
+    generated_at: UtcDatetime
     disclaimer: str
 
 
