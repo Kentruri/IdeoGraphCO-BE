@@ -2,9 +2,11 @@
 
 from src.core.schema import ARTICLE_CLASSIFICATION_DONE
 from src.db.models import Article, Story
+from src.explanation.basis import is_current
 from src.ingestion.sources import source_display_name
 from src.schemas.dto import (
     ClassificationDTO,
+    ExplanationDTO,
     SourceArticleDTO,
     StoryDetailDTO,
     StoryListItemDTO,
@@ -15,6 +17,14 @@ SYNTH_DISCLAIMER_TEMPLATE = (
     "Texto sintético generado por IA a partir de {n} medios que cubrieron el mismo "
     "hecho, para ofrecer un encuadre más balanceado. Solo usa información de esas "
     "fuentes, pero puede contener errores: contraste con los originales."
+)
+
+# El modelo asigna la clase y la IA explica qué del texto la sustenta: el rótulo
+# nombra las dos partes sin presentar el párrafo como el razonamiento interno
+# del clasificador.
+EXPLANATION_DISCLAIMER = (
+    "Explicación redactada por IA a partir de la clase que asignó el modelo y "
+    "del codebook."
 )
 
 
@@ -92,6 +102,20 @@ def _synthesis_classification(story: Story) -> ClassificationDTO | None:
     )
 
 
+def explanation_dto(article: Article) -> ExplanationDTO | None:
+    """La explicación de la clasificación vigente; None si falta o quedó vieja."""
+    if not is_current(article):
+        return None
+    basis = article.explanation_basis
+    return ExplanationDTO(
+        text=article.explanation_text,
+        classes=[basis["label"], *([basis["second"]] if basis.get("second") else [])],
+        model=article.explanation_model or "unknown",
+        generated_at=article.explanation_generated_at,
+        disclaimer=EXPLANATION_DISCLAIMER,
+    )
+
+
 def to_detail(story: Story) -> StoryDetailDTO:
     base = to_list_item(story)
     synthesized = None
@@ -109,6 +133,7 @@ def to_detail(story: Story) -> StoryDetailDTO:
     return StoryDetailDTO(
         **base.model_dump(),
         keywords=story.keywords or [],
+        explanation=explanation_dto(representative_article(story)),
         synthesized=synthesized,
         sources=[to_source_dto(article) for article in story.articles],
     )

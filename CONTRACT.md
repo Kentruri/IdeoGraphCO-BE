@@ -1,4 +1,4 @@
-# Contrato BE ↔ FE — v2 (2026-07-29; `/classify` con filtro de dominio y filtros del listado, 2026-11-04)
+# Contrato BE ↔ FE — v2 (2026-07-29; `/classify` con filtro de dominio y filtros del listado, 2026-11-04; explicación de la clasificación, 2026-11-10)
 
 Contrato de datos entre **IdeoGraphCO-BE** (este repo) e **IdeoGraphCO-FE**.
 Todos los campos van en `snake_case`.
@@ -32,6 +32,14 @@ para filtrar o enlazar; `source_display_name` es el nombre para mostrar
 - El público **no ve el texto completo** de los articles originales: ve
   título + snippet + clasificación + link al medio. El único cuerpo completo
   que se publica es el de la sintética (contenido generado propio, etiquetado).
+- La clasificación del detalle trae una **explicación** (`explanation`,
+  nullable): un párrafo de 3 o 4 frases sobre qué elementos del texto
+  corresponden a la clase predicha y, si la segunda clase llega al 20 %,
+  también a esa. La redacta un LLM a partir del texto, la distribución y el
+  codebook (`src/explanation`); **no es el razonamiento del clasificador**.
+  Se genera una vez por clasificación y se guarda; si el artículo se
+  reclasifica, la API manda `null` hasta que se vuelva a generar
+  (`scripts/explicar.py`).
 
 ## Las 8 clases (compartidas con IdeoGraphCO y el FE)
 
@@ -114,6 +122,13 @@ Detalle completo. Los errores usan el formato estándar de FastAPI:
 {
   // …mismos campos del item de listado, más:
   "keywords": ["reforma pensional", "congreso"],
+  "explanation": {                        // null si aún no se generó (o quedó vieja)
+    "text": "La nota presenta … (3 o 4 frases)",
+    "classes": ["globalismo", "personalismo"],  // la predicha y, si llega al 20 %, la segunda
+    "model": "claude-opus-5-5",           // LLM que la redactó
+    "generated_at": "2026-11-10T21:00:00Z",
+    "disclaimer": "Explicación redactada por IA a partir de la clase que asignó el modelo y del codebook."
+  },
   "synthesized": {                        // null si no hay síntesis
     "title": "…",
     "body": ["párrafo 1", "párrafo 2"],
@@ -202,8 +217,12 @@ El FE distingue los dos 422 por `code === "not_political"`.
 3. `classification` puede ser `null` en `sources[]` (clasificación pendiente);
    en el item de listado nunca es `null` (una story no se publica sin
    clasificar su representativo).
-4. Campos nullable: `subtitle`, `author`, `image_url`, `synthesized`,
-   `sources[].classification`.
+4. Campos nullable: `subtitle`, `author`, `image_url`, `explanation`,
+   `synthesized`, `sources[].classification`.
+5. `explanation` va bajo la clase predicha, siempre con su `disclaimer`
+   visible. Si es `null` no se muestra nada en su lugar. Explica la
+   clasificación del detalle (la del representativo), no la de las demás
+   fuentes. Solo la trae el detalle, no el listado.
 
 ## Diferencias vs. el mock actual del FE (migración)
 

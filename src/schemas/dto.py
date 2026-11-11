@@ -95,8 +95,29 @@ class SynthesizedDTO(BaseModel):
     classification: ClassificationDTO | None = None
 
 
+class ExplanationDTO(BaseModel):
+    """Por qué la noticia cae en su clase predicha (y en la segunda, si pesa).
+
+    La redacta un LLM a partir del texto del representativo, la distribución
+    del clasificador y el codebook de las clases. Describe elementos de
+    encuadre del texto; no es el razonamiento interno del clasificador, y por
+    eso se muestra siempre con `disclaimer`.
+    """
+
+    text: str
+    # Clases que explica: la predicha y, si su probabilidad llega al umbral
+    # (20 %), la segunda.
+    classes: list[str]
+    model: str
+    generated_at: UtcDatetime
+    disclaimer: str
+
+
 class StoryDetailDTO(StoryListItemDTO):
     keywords: list[str]
+    # Explicación de `classification` (la del representativo); null si aún no
+    # se generó o si el artículo se reclasificó después.
+    explanation: ExplanationDTO | None = None
     synthesized: SynthesizedDTO | None
     sources: list[SourceArticleDTO]
 

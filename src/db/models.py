@@ -100,6 +100,20 @@ class Article(Base):
     classification_probabilities: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     classification_model_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
+    # Explicación de la clasificación en lenguaje natural (src/explanation). La
+    # redacta un LLM a partir del texto, la distribución y el codebook; no es el
+    # razonamiento del clasificador. Se escribe una vez por clasificación:
+    # `explanation_basis` guarda cuál ({label, second, model_version}) y, si el
+    # artículo se reclasifica, la API deja de servirla hasta que se rehaga.
+    explanation_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    explanation_basis: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Cuánto apoya el texto cada clase explicada, según el LLM ({clase: alto|medio|bajo}).
+    explanation_support: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    explanation_model: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    explanation_generated_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
     story: Mapped[Story] = relationship(back_populates="articles")

@@ -6,10 +6,14 @@ Ejemplos:
     python scripts/ingest.py --categories nacional regional --max-per-source 3
     python scripts/ingest.py --no-filter                      # sin filtro LLM (pruebas)
     python scripts/ingest.py --no-triangulation               # sin buscar/agrupar después
+    python scripts/ingest.py --no-explanations                # sin explicar las nuevas
 
 Al terminar, la triangulación corre sola (src/triangulation): busca otras
 coberturas de las noticias recientes, agrupa el mismo hecho y, con ≥3 medios
-y GEMINI_API_KEY, redacta la versión triangulada.
+y GEMINI_API_KEY, redacta la versión triangulada. Después, con
+EXPLANATION_MODE=claude_cli, se escribe la explicación de cada noticia nueva
+(src/explanation); con el valor por defecto (off) quedan para
+scripts/explicar.py.
 """
 
 import argparse
@@ -45,6 +49,11 @@ def main() -> int:
     parser.add_argument(
         "--no-triangulation", action="store_true", help="No triangular al terminar la ingesta"
     )
+    parser.add_argument(
+        "--no-explanations",
+        action="store_true",
+        help="No escribir las explicaciones al terminar (aunque EXPLANATION_MODE las pida)",
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -71,6 +80,18 @@ def main() -> int:
             except Exception:  # noqa: BLE001 — la triangulación no tumba la ingesta
                 session.rollback()
                 logging.getLogger(__name__).exception("La triangulación falló")
+        # Después de triangular: así también se explican las coberturas que
+        # trajo la búsqueda dirigida.
+        if not args.no_explanations and settings.explanation_mode != "off":
+            from src.explanation.generator import get_explainer
+            from src.explanation.pipeline import run_explanations
+
+            try:
+                explanation_stats = run_explanations(session, get_explainer(settings), settings)
+                print(f"\nExplicaciones: {explanation_stats.summary()}")
+            except Exception:  # noqa: BLE001 — las explicaciones no tumban la ingesta
+                session.rollback()
+                logging.getLogger(__name__).exception("Las explicaciones fallaron")
     finally:
         session.close()
 

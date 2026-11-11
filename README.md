@@ -68,6 +68,10 @@ pytest && ruff check src tests scripts inference
    siguiente corrida; la story no se publica hasta clasificar.
 6. **Persistencia**: cada artículo crea su story de fuente única; la
    triangulación (abajo) las reúne después.
+7. **Explicación de la clasificación** (opcional): con
+   `EXPLANATION_MODE=claude_cli`, al final de la corrida un LLM escribe la
+   explicación de cada noticia nueva (ver abajo). Por defecto (`off`) no se
+   hace y quedan para `scripts/explicar.py`.
 
 ## Triangulación (Fases 2 y 3)
 
@@ -114,7 +118,7 @@ Sin `GEMINI_API_KEY` busca y agrupa, pero no filtra lo descargado ni sintetiza.
 | Ruta | Descripción |
 |---|---|
 | `GET /api/v1/stories?page&page_size&source_category&ideology&published_from&published_to&q` | Listado paginado (solo publicadas), con filtros opcionales (ver `CONTRACT.md`) |
-| `GET /api/v1/stories/{slug}` | Detalle: representativo + `synthesized` (nullable) + `sources[]` |
+| `GET /api/v1/stories/{slug}` | Detalle: representativo + `explanation` (nullable) + `synthesized` (nullable) + `sources[]` |
 | `GET /api/v1/health` | Health check |
 | `POST /api/v1/classify` | Mesa de redacción: clasifica sin guardar. Con `GEMINI_API_KEY` pasa antes por el filtro de politicidad (422 `not_political` si no es del dominio); sin ella, confía en el usuario |
 
@@ -209,6 +213,74 @@ representativo. Al final informa cuántos cambiaron de clase y entre cuáles.
 
 Con el mock (`CLASSIFIER_MODE=mock`, versión `mock-0.1.0`) se puede probar
 sin el servicio: reclasifica todo lo que no esté en `mock-0.1.0`.
+
+Después de reclasificar hay que correr `scripts/explicar.py`: la API no sirve
+una explicación escrita para otra clasificación (ver la sección siguiente).
+
+## Explicación de la clasificación
+
+El detalle de cada noticia trae `explanation`: un párrafo de 3 o 4 frases que
+dice qué elementos del texto corresponden a la clase predicha y, si la segunda
+clase llega al 20 % (`EXPLANATION_SECOND_MIN_PROBABILITY`), también a esa
+(`src/explanation`). Lo redacta un LLM a partir del titular y el texto que leyó
+el clasificador, la distribución que devolvió y el codebook de las ocho clases
+(`src/explanation/codebook.py`, copia del de IdeoGraphCO con una prueba de
+paridad).
+
+**No es el razonamiento del clasificador**: BETO no se explica a sí mismo y el
+LLM no sabe qué miró. La API la entrega con un `disclaimer` que lo dice y el FE
+lo muestra siempre. El prompt pide lenguaje neutral (encuadre del texto, sin
+juicios sobre la veracidad, el medio o los periodistas), decir que el texto
+apoya poco la clase cuando es así, parafrasear y no llamar «confianza» a la
+probabilidad. Lo que se puede comprobar con código se valida antes de guardar:
+largo, porcentajes, la palabra «confianza», razonamientos atribuidos al
+modelo, citas de más de 8 palabras, frases de 12 palabras copiadas de la nota
+y que nombre las clases que explica. Una respuesta que no cumple se pide otra
+vez una sola vez, diciendo qué regla falló.
+
+El LLM es Claude por `claude -p` (Claude Code en modo no interactivo, con la
+suscripción del usuario): sin herramientas, con su propio system prompt, en
+`--safe-mode` (sin CLAUDE.md, hooks ni MCP) y desde una carpeta temporal
+vacía. Cada llamada gasta cuota de la suscripción: en el piloto, con
+`claude-opus-5-5`, unos 0,17 USD por noticia a precio de API (la mayor parte
+es razonamiento del modelo).
+
+`EXPLANATION_MODEL` lleva el id completo (`claude-opus-5-5`) y no un alias,
+porque el alias depende de la versión del CLI: en la 2.1.270, `opus` es
+todavía `claude-opus-5`, y `claude-opus-5-5` pide la 2.1.280 o más nueva
+(`claude update`). `CLAUDE_BIN` permite usar otro binario de `claude`.
+
+```bash
+# Cuántas faltan (no llama al LLM)
+python scripts/explicar.py --dry-run
+
+# Piloto: una noticia o las 3 primeras, mostrando el texto
+python scripts/explicar.py --slug <slug-de-la-story> --show
+python scripts/explicar.py --limit 3 --show
+
+# Todas las que faltan, 3 llamadas en paralelo
+python scripts/explicar.py --concurrency 3
+```
+
+- **Una vez por clasificación**: cada artículo guarda su explicación, el LLM
+  que la escribió y para qué clasificación (`explanation_basis`: clase,
+  segunda clase y versión del modelo). Volver a correr el comando solo hace
+  las que faltan: las nuevas y las de artículos reclasificados, que la API
+  deja en `null` hasta rehacerlas. `--force` las rehace todas.
+- **Primero lo visible**: empieza por el representativo de cada story
+  publicada, de lo más reciente a lo más antiguo; después las demás fuentes.
+- **Fallos**: un artículo que falla queda sin explicación y se reintenta en la
+  próxima corrida. Si Claude avisa de límite de uso o falta de sesión, o
+  fallan 3 seguidos, se detiene. Al final informa las llamadas hechas y su
+  costo equivalente a precio de API.
+- **Ingestas nuevas**: con `EXPLANATION_MODE=claude_cli` en `.env`,
+  `scripts/ingest.py` explica al terminar lo que trajo (se salta con
+  `--no-explanations`). El cron de GitHub Actions no tiene `claude`, así que
+  allí queda en `off` y se rellenan después con `scripts/explicar.py`.
+- `explanation_support` guarda, por clase explicada, cuánto apoya el texto esa
+  clase según el LLM (alto, medio o bajo). No se publica en la API: sirve para
+  revisar las explicaciones con apoyo bajo. No es una validación del
+  clasificador.
 
 ## Roadmap
 
