@@ -17,18 +17,44 @@ class Settings(BaseSettings):
 
     database_url: str = "sqlite:///./data/ideographco.db"
 
-    # Filtro de politicidad (Gemini). Sin key, el filtro se desactiva.
+    # Filtro de politicidad (Gemini) de la ingesta y de la mesa de redacción.
+    # Sin key, el filtro se desactiva: la mesa clasifica todo texto.
     gemini_api_key: str = ""
     filter_model: str = "gemini-2.5-flash-lite"
     filter_escalate_model: str = "gemini-2.5-flash"
     filter_escalate_threshold: float = 0.7
     # Segundos entre llamadas al filtro (free tier Gemini ≈ 15 RPM).
     filter_rate_limit_seconds: float = 4.5
+    # Tope por llamada a Gemini cuando la mesa de redacción (POST /classify)
+    # pasa el texto por el filtro. Con escalado son hasta dos llamadas.
+    classify_filter_timeout_seconds: float = 10.0
+
+    # Triangulación (src/triangulation): síntesis neutral con ≥N medios del
+    # mismo hecho. Sin GEMINI_API_KEY se agrupa pero no se sintetiza.
+    synthesis_model: str = "gemini-2.5-flash"
+    synthesis_min_sources: int = 3
 
     # Clasificador ideológico externo (repo IdeoGraphCO).
     classifier_mode: Literal["mock", "http", "off"] = "mock"
     classifier_api_url: str = ""
     classifier_timeout_seconds: float = 30.0
+
+    # Explicación de la clasificación (src/explanation): un LLM redacta por qué
+    # cada noticia cae en su clase. "off": la ingesta no las genera (se
+    # rellenan con scripts/explicar.py); "claude_cli": la ingesta las genera
+    # al terminar con `claude -p` y la suscripción de Claude del usuario.
+    explanation_mode: Literal["off", "claude_cli"] = "off"
+    # Id del modelo para `claude -p --model`. Mejor el id completo que un
+    # alias: el alias depende de la versión del CLI (en la 2.1.270, `opus`
+    # todavía es claude-opus-5).
+    explanation_model: str = "claude-opus-5-5"
+    # Nivel de esfuerzo de `claude -p --effort`; vacío = el del modelo.
+    explanation_effort: str = ""
+    explanation_timeout_seconds: float = 300.0
+    # La explicación cubre también la segunda clase si su probabilidad llega a esto.
+    explanation_second_min_probability: float = 0.20
+    # Ruta del binario `claude`; vacío = el que esté en el PATH.
+    claude_bin: str = ""
 
     cors_origins: str = "http://localhost:3000"
 

@@ -4,8 +4,22 @@ snake_case intencional: es el formato que viaja por la API.
 """
 
 from datetime import datetime
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import AfterValidator, BaseModel, Field
+
+from src.core.dates import as_utc
+
+# Fechas del contrato: siempre ISO 8601 en UTC con zona ("…Z"). SQLite
+# devuelve las fechas sin zona y Postgres en la zona de la sesión; aquí se
+# normalizan para que el FE no las lea como hora local.
+UtcDatetime = Annotated[datetime, AfterValidator(as_utc)]
+
+# Tope del texto a clasificar: ~30.000 caracteres equivalen a los 6.270
+# tokens que el modelo alcanza a leer con 16 ventanas; lo que pase de ahí
+# el troceo lo descartaría de todos modos.
+CLASSIFY_MAX_TEXT_CHARS = 30_000
+CLASSIFY_MIN_TEXT_CHARS = 40
 
 
 class ClassificationDTO(BaseModel):
@@ -14,15 +28,40 @@ class ClassificationDTO(BaseModel):
     model_version: str
 
 
+class ClassifyRequestDTO(BaseModel):
+    title: str = Field("", max_length=300)
+    text: str = Field(min_length=CLASSIFY_MIN_TEXT_CHARS, max_length=CLASSIFY_MAX_TEXT_CHARS)
+
+
+class ClassifyResponseDTO(ClassificationDTO):
+    # Filtro de politicidad (opcional):
+    # "disabled": sin GEMINI_API_KEY no hay filtro; se confía en el usuario.
+    # "passed": el filtro confirmó que es una noticia política colombiana.
+    # "unavailable": hay clave pero el filtro falló; se clasificó sin él.
+    political_filter: Literal["disabled", "passed", "unavailable"]
+
+
+class NotPoliticalErrorDTO(BaseModel):
+    """422 de /classify cuando el filtro dice que el texto no es del dominio."""
+
+    detail: str
+    code: Literal["not_political"] = "not_political"
+    # nonpolitical_article | biography_static | garbage
+    category: str
+    confidence: float | None
+    reason: str
+
+
 class StoryListItemDTO(BaseModel):
     id: str
     slug: str
     title: str
     subtitle: str | None
-    source_name: str
+    source_name: str  # slug del catálogo (src/ingestion/sources.py)
+    source_display_name: str  # nombre legible del medio
     source_category: str
     author: str | None
-    published_at: datetime
+    published_at: UtcDatetime
     image_url: str | None
     reading_time_minutes: int
     classification: ClassificationDTO
@@ -33,25 +72,52 @@ class StoryListItemDTO(BaseModel):
 class SourceArticleDTO(BaseModel):
     id: str
     source_name: str
+    source_display_name: str
     source_category: str
     title: str
     snippet: str
     url: str
     author: str | None
-    published_at: datetime
+    published_at: UtcDatetime
     classification: ClassificationDTO | None
 
 
 class SynthesizedDTO(BaseModel):
+    """Noticia sintética por triangulación (≥3 medios del mismo hecho)."""
+
     title: str
     body: list[str]
     model: str
-    generated_at: datetime
+    generated_at: UtcDatetime
+    disclaimer: str
+    # Encuadre de la síntesis según el mismo clasificador; null si el
+    # servicio no estaba disponible al generarla.
+    classification: ClassificationDTO | None = None
+
+
+class ExplanationDTO(BaseModel):
+    """Por qué la noticia cae en su clase predicha (y en la segunda, si pesa).
+
+    La redacta un LLM a partir del texto del representativo, la distribución
+    del clasificador y el codebook de las clases. Describe elementos de
+    encuadre del texto; no es el razonamiento interno del clasificador, y por
+    eso se muestra siempre con `disclaimer`.
+    """
+
+    text: str
+    # Clases que explica: la predicha y, si su probabilidad llega al umbral
+    # (20 %), la segunda.
+    classes: list[str]
+    model: str
+    generated_at: UtcDatetime
     disclaimer: str
 
 
 class StoryDetailDTO(StoryListItemDTO):
     keywords: list[str]
+    # Explicación de `classification` (la del representativo); null si aún no
+    # se generó o si el artículo se reclasificó después.
+    explanation: ExplanationDTO | None = None
     synthesized: SynthesizedDTO | None
     sources: list[SourceArticleDTO]
 
