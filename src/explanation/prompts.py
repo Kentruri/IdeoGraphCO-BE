@@ -6,8 +6,11 @@ lo puede reutilizar de caché. Lo que cambia por artículo (titular, texto,
 distribución y clases a cubrir) va en el prompt del usuario.
 """
 
+import hashlib
+import json
 from dataclasses import dataclass
 
+from src.core.schema import IDEOLOGY_CLASSES
 from src.explanation.codebook import (
     AXIS_DEFINITIONS,
     CALIBRATION_RULES,
@@ -17,6 +20,13 @@ from src.explanation.codebook import (
     TONO_RULES,
 )
 from src.schemas.dto import CLASSIFY_MAX_TEXT_CHARS
+
+# Versión de los prompts de este módulo: el system prompt (con el codebook que
+# lleva adentro), la plantilla del prompt del usuario y el esquema de la
+# respuesta. Se guarda con cada explicación y con cada ficha de revisión. Si
+# cambia cualquiera de los tres, hay que subirla: una prueba fija la huella
+# (`prompt_fingerprint`) de cada versión y falla si el texto cambió sin subirla.
+EXPLANATION_PROMPT_VERSION = "1"
 
 # Lo que alcanza a leer el clasificador (16 ventanas de 512 tokens): la
 # explicación lee el mismo texto, no más.
@@ -205,3 +215,23 @@ def explanation_user_prompt(request: ExplanationRequest, feedback: str | None = 
             f"{feedback}. Escríbela de nuevo cumpliendo todas las reglas."
         )
     return prompt
+
+
+def prompt_fingerprint() -> str:
+    """SHA-256 de lo que recibe el LLM salvo los datos de cada noticia.
+
+    Cubre el system prompt, el esquema de la respuesta y la plantilla del prompt
+    del usuario, armada con una noticia de muestra en sus tres variantes (con
+    segunda clase, sin ella y con la regla que falló en un intento anterior).
+    """
+    probabilities = {name: 0.125 for name in IDEOLOGY_CLASSES}
+    with_second = ExplanationRequest("Titular", "Texto", probabilities, "populismo", "progresismo")
+    only_one = ExplanationRequest("Titular", "Texto", probabilities, "populismo", None)
+    parts = [
+        EXPLANATION_SYSTEM_PROMPT,
+        json.dumps(RESPONSE_SCHEMA, sort_keys=True),
+        explanation_user_prompt(with_second),
+        explanation_user_prompt(only_one),
+        explanation_user_prompt(only_one, "una regla"),
+    ]
+    return hashlib.sha256("\n\0\n".join(parts).encode("utf-8")).hexdigest()

@@ -13,6 +13,9 @@ clases que debía explicar. Un rechazo se reintenta una vez diciéndole al LLM
 qué regla falló; si vuelve a fallar, el artículo queda sin explicación y se
 reintenta en la corrida siguiente. La neutralidad del tono no se puede comprobar
 así: la cuidan el prompt y la revisión humana.
+
+La explicación en vivo de la mesa de redacción (`stream.py`) usa la misma
+llamada (`claude_command`, en streaming) y la misma validación.
 """
 
 import json
@@ -28,6 +31,7 @@ from typing import Protocol
 
 from src.config import Settings
 from src.explanation.prompts import (
+    EXPLANATION_PROMPT_VERSION,
     EXPLANATION_SYSTEM_PROMPT,
     RESPONSE_SCHEMA,
     SUPPORT_LEVELS,
@@ -133,6 +137,8 @@ class Explanation:
     support: dict[str, str]
     # Id del LLM que la redactó (p. ej. claude-opus-5-5).
     model: str
+    # Versión de los prompts con que se pidió (prompts.EXPLANATION_PROMPT_VERSION).
+    prompt_version: str = EXPLANATION_PROMPT_VERSION
 
 
 class ExplainerUnavailable(RuntimeError):
@@ -230,7 +236,12 @@ def parse_explanation(
         support[request.second] = payload.get("support_second")
     if any(level not in SUPPORT_LEVELS for level in support.values()):
         return None, "no calificó el apoyo de cada clase con alto, medio o bajo"
-    return Explanation(text=text, support=support, model=model), None
+    return (
+        Explanation(
+            text=text, support=support, model=model, prompt_version=EXPLANATION_PROMPT_VERSION
+        ),
+        None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +301,49 @@ def envelope_model(envelope: dict, fallback: str) -> str:
     return fallback
 
 
+def claude_command(
+    claude_bin: str | None,
+    model: str,
+    *,
+    effort: str | None = None,
+    use_json_schema: bool = True,
+    stream: bool = False,
+) -> list[str]:
+    """La llamada a `claude -p` de la explicación, en lotes o en streaming.
+
+    En streaming (`stream-json`), `claude -p` exige `--verbose`, y
+    `--include-partial-messages` manda los trozos de la respuesta a medida que
+    llegan: con `--json-schema`, el JSON de la herramienta `StructuredOutput`.
+    """
+    if not claude_bin:
+        raise ExplainerUnavailable("no se encontró el binario `claude` (define CLAUDE_BIN)")
+    command = [
+        claude_bin,
+        "-p",
+        "--model", model,
+        "--system-prompt", EXPLANATION_SYSTEM_PROMPT,
+        "--tools", "",
+        "--output-format", "stream-json" if stream else "json",
+        "--no-session-persistence",
+        "--safe-mode",
+    ]
+    if stream:
+        command += ["--verbose", "--include-partial-messages"]
+    if use_json_schema:
+        command += ["--json-schema", json.dumps(RESPONSE_SCHEMA)]
+    if effort:
+        command += ["--effort", effort]
+    return command
+
+
+def raise_if_unavailable(message: str) -> None:
+    """ExplainerUnavailable si el error de `claude -p` dice que no hay cuota o sesión."""
+    if _USAGE_LIMIT.search(message):
+        raise ExplainerUnavailable(f"límite de uso de Claude: {message[:200]}")
+    if _NOT_LOGGED_IN.search(message):
+        raise ExplainerUnavailable(f"`claude` sin sesión iniciada: {message[:200]}")
+
+
 class ClaudeCliExplainer:
     """`claude -p` sin herramientas, con system prompt propio y salida JSON.
 
@@ -319,23 +373,9 @@ class ClaudeCliExplainer:
         self.cost_usd = 0.0
 
     def command(self) -> list[str]:
-        if not self._bin:
-            raise ExplainerUnavailable("no se encontró el binario `claude` (define CLAUDE_BIN)")
-        command = [
-            self._bin,
-            "-p",
-            "--model", self.model,
-            "--system-prompt", EXPLANATION_SYSTEM_PROMPT,
-            "--tools", "",
-            "--output-format", "json",
-            "--no-session-persistence",
-            "--safe-mode",
-        ]
-        if self._use_json_schema:
-            command += ["--json-schema", json.dumps(RESPONSE_SCHEMA)]
-        if self._effort:
-            command += ["--effort", self._effort]
-        return command
+        return claude_command(
+            self._bin, self.model, effort=self._effort, use_json_schema=self._use_json_schema
+        )
 
     def _call(self, prompt: str) -> dict | None:
         """Una llamada. None si falló solo esta; ExplainerUnavailable si no hay servicio."""
@@ -373,10 +413,7 @@ class ClaudeCliExplainer:
             )
             if part
         )[:500]
-        if _USAGE_LIMIT.search(message):
-            raise ExplainerUnavailable(f"límite de uso de Claude: {message[:200]}")
-        if _NOT_LOGGED_IN.search(message):
-            raise ExplainerUnavailable(f"`claude` sin sesión iniciada: {message[:200]}")
+        raise_if_unavailable(message)
         logger.warning("claude -p falló (código %s): %s", completed.returncode, message[:200])
         return None
 
