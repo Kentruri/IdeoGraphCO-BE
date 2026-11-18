@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     # Ruta del binario `claude`; vacío = el que esté en el PATH.
     claude_bin: str = ""
 
+    # Explicación en vivo de la mesa de redacción (POST /api/v1/explain, en
+    # streaming) y fichas de revisión (POST /api/v1/explanation-reviews). Aparte
+    # de explanation_mode para que activarla no haga gastar a la ingesta.
+    # "off": ambas rutas responden 503; "claude_cli": `claude -p` con la
+    # suscripción del usuario, como scripts/explicar.py (solo en local).
+    desk_explanation_mode: Literal["off", "claude_cli"] = "off"
+    # Modelo de la explicación en vivo; vacío = explanation_model.
+    desk_explanation_model: str = ""
+
     cors_origins: str = "http://localhost:3000"
 
     @property
