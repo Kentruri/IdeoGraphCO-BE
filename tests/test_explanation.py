@@ -29,6 +29,7 @@ from src.explanation.generator import (
 )
 from src.explanation.pipeline import run_explanations, select_pending
 from src.explanation.prompts import (
+    EXPLANATION_PROMPT_VERSION,
     EXPLANATION_SYSTEM_PROMPT,
     NO_SECOND,
     ExplanationRequest,
@@ -414,6 +415,7 @@ def test_run_explanations_fills_the_pending_and_is_idempotent(db_session):
         "label": "populismo",
         "second": "progresismo",
         "model_version": "test-1.0",
+        "prompt_version": EXPLANATION_PROMPT_VERSION,
     }
     assert article.explanation_support == {"populismo": "medio", "progresismo": "bajo"}
     assert article.explanation_model == "fake-llm" and is_current(article)
@@ -466,6 +468,7 @@ def test_api_detail_serves_the_explanation_with_its_disclaimer(client, db_sessio
     assert data["explanation"]["text"] == "Texto de prueba sobre populismo."
     assert data["explanation"]["classes"] == ["populismo"]
     assert data["explanation"]["model"] == "fake-llm"
+    assert data["explanation"]["prompt_version"] == EXPLANATION_PROMPT_VERSION
     assert data["explanation"]["disclaimer"] == EXPLANATION_DISCLAIMER
     assert "por IA a partir de la clase que asignó el modelo" in EXPLANATION_DISCLAIMER
     assert data["explanation"]["generated_at"].endswith("Z")

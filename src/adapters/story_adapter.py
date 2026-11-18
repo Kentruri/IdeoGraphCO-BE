@@ -111,6 +111,7 @@ def explanation_dto(article: Article) -> ExplanationDTO | None:
         text=article.explanation_text,
         classes=[basis["label"], *([basis["second"]] if basis.get("second") else [])],
         model=article.explanation_model or "unknown",
+        prompt_version=basis.get("prompt_version"),
         generated_at=article.explanation_generated_at,
         disclaimer=EXPLANATION_DISCLAIMER,
     )

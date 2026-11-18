@@ -8,7 +8,7 @@ la story agrupa 1..5 artículos de la misma historia y guarda la síntesis
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, Boolean, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.core.schema import (
@@ -132,3 +132,39 @@ class SkippedUrl(Base):
     url: Mapped[str] = mapped_column(String(1000), primary_key=True)
     reason: Mapped[str] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class ExplanationReview(Base):
+    """Ficha de revisión humana de una explicación en vivo de la mesa de redacción.
+
+    La mesa no guarda nada al clasificar ni al explicar: el texto pegado solo
+    queda aquí si alguien guarda la ficha. Se guarda la explicación tal como la
+    entregó el LLM (con su modelo y la versión de los prompts) junto a lo que
+    decidió quien la revisó, para poder comparar las dos lecturas.
+    """
+
+    __tablename__ = "explanation_reviews"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+
+    title: Mapped[str] = mapped_column(Text, default="")
+    text: Mapped[str] = mapped_column(Text)
+
+    classification_label: Mapped[str] = mapped_column(String(32))
+    classification_probabilities: Mapped[dict] = mapped_column(JSON)
+    classification_model_version: Mapped[str] = mapped_column(String(80))
+
+    # Lo que entregó el LLM (evento `explanation` de /explain).
+    explanation_text: Mapped[str] = mapped_column(Text)
+    explanation_classes: Mapped[list] = mapped_column(JSON)
+    explanation_support: Mapped[dict] = mapped_column(JSON)  # {clase: alto|medio|bajo}
+    explanation_model: Mapped[str] = mapped_column(String(80))
+    explanation_prompt_version: Mapped[str] = mapped_column(String(40))
+
+    # Lo que decidió quien revisó.
+    reviewer_support: Mapped[dict] = mapped_column(JSON)  # {clase: alto|medio|bajo}
+    revised_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fits_text: Mapped[str] = mapped_column(String(10))  # si | en_parte | no
+    neutral: Mapped[bool] = mapped_column(Boolean)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)

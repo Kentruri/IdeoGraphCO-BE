@@ -82,7 +82,8 @@ def select_pending(
 
 def _save(article: Article, basis: dict, explanation: Explanation) -> None:
     article.explanation_text = explanation.text
-    article.explanation_basis = basis
+    # La versión de los prompts va en la misma columna JSON: no hace falta migrar.
+    article.explanation_basis = {**basis, "prompt_version": explanation.prompt_version}
     article.explanation_support = explanation.support
     article.explanation_model = explanation.model
     article.explanation_generated_at = utcnow()
