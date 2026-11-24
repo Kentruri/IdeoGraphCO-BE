@@ -1,6 +1,9 @@
 """Aplicación FastAPI (solo lectura: la escritura ocurre en el cron).
 
-La única ruta POST, /api/v1/classify, clasifica un texto sin guardarlo.
+Las rutas POST son de la mesa de redacción: /api/v1/classify clasifica un texto
+sin guardarlo; /api/v1/explain lo clasifica y transmite su explicación en vivo
+(SSE), también sin guardar nada; /api/v1/explanation-reviews guarda la ficha de
+revisión de esa explicación. Las dos últimas solo con DESK_EXPLANATION_MODE.
 
 Arranque local:
     uvicorn src.api.app:app --reload --port 8000
@@ -8,12 +11,15 @@ Arranque local:
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from src.api.routes import classify, health, stories
+from src.api.deps import DESK_EXPLANATIONS_DISABLED_DETAIL, DeskExplanationsDisabled
+from src.api.routes import classify, explain, health, reviews, stories
 from src.config import APP_VERSION, get_settings
 from src.db.session import init_db
+from src.schemas.dto import FeatureDisabledErrorDTO
 
 
 @asynccontextmanager
@@ -42,6 +48,14 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(stories.router)
     app.include_router(classify.router)
+    app.include_router(explain.router)
+    app.include_router(reviews.router)
+
+    @app.exception_handler(DeskExplanationsDisabled)
+    async def desk_explanations_disabled(_request: Request, _exc: DeskExplanationsDisabled):
+        error = FeatureDisabledErrorDTO(detail=DESK_EXPLANATIONS_DISABLED_DETAIL)
+        return JSONResponse(status_code=503, content=error.model_dump())
+
     return app
 
 
