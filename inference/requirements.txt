@@ -1,0 +1,8 @@
+# Servicio de inferencia (aparte de la API de lectura: necesita PyTorch).
+# Mismas versiones que entrenaron el checkpoint en el repo IdeoGraphCO.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+torch==2.11.0
+transformers==5.4.0
+safetensors>=0.4

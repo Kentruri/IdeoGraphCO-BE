@@ -9,7 +9,7 @@ migrar a Alembic.
 import logging
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from src.config import get_settings
@@ -56,5 +56,30 @@ def init_db() -> None:
     """Crea las tablas si no existen (idempotente)."""
     from src.db import models  # noqa: F401 — registra los modelos en Base
 
-    Base.metadata.create_all(bind=get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
+    _add_missing_nullable_columns(engine)
     logger.info("Esquema de BD verificado/creado")
+
+
+def _add_missing_nullable_columns(engine) -> None:
+    """Migración mínima: agrega columnas nuevas y nullable a tablas existentes.
+
+    create_all no altera tablas que ya existen. Para el prototipo basta con
+    sumar columnas opcionales (p. ej. stories.synthesized_classification);
+    cambios de tipo o columnas obligatorias exigirían Alembic.
+    """
+    inspector = inspect(engine)
+    for table in Base.metadata.sorted_tables:
+        if not inspector.has_table(table.name):
+            continue
+        existing = {column["name"] for column in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in existing or not column.nullable:
+                continue
+            column_type = column.type.compile(dialect=engine.dialect)
+            with engine.begin() as connection:
+                connection.execute(
+                    text(f'ALTER TABLE {table.name} ADD COLUMN "{column.name}" {column_type}')
+                )
+            logger.info("Columna agregada: %s.%s", table.name, column.name)

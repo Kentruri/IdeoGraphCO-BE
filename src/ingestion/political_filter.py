@@ -84,10 +84,15 @@ def is_political_article(
     max_chars: int = 3000,
     escalate_model: str | None = "gemini-2.5-flash",
     escalate_threshold: float = 0.7,
+    max_retries: int = 3,
 ) -> tuple[bool, dict | None]:
-    """(es_político, info). Si la confianza del primario es baja, escala."""
+    """(es_político, info). Si la confianza del primario es baja, escala.
+
+    `max_retries` es por modelo. La ingesta usa 3 (puede esperar hasta 60 s
+    por un 429); la mesa de redacción usa 1 para no dejar colgada la petición.
+    """
     truncated = text[:max_chars]
-    response = call_filter_with_retry(client, model, truncated)
+    response = call_filter_with_retry(client, model, truncated, max_retries=max_retries)
     if response is None:
         return False, None
 
@@ -99,7 +104,9 @@ def is_political_article(
     conf = data.get("confidence")
     if escalate_model and isinstance(conf, int | float) and conf < escalate_threshold:
         primary_conf = conf
-        response_esc = call_filter_with_retry(client, escalate_model, truncated)
+        response_esc = call_filter_with_retry(
+            client, escalate_model, truncated, max_retries=max_retries
+        )
         if response_esc is not None:
             data_esc = parse_filter_response(response_esc)
             if data_esc is not None:

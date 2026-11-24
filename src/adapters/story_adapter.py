@@ -2,8 +2,11 @@
 
 from src.core.schema import ARTICLE_CLASSIFICATION_DONE
 from src.db.models import Article, Story
+from src.explanation.basis import is_current
+from src.ingestion.sources import source_display_name
 from src.schemas.dto import (
     ClassificationDTO,
+    ExplanationDTO,
     SourceArticleDTO,
     StoryDetailDTO,
     StoryListItemDTO,
@@ -11,7 +14,17 @@ from src.schemas.dto import (
 )
 
 SYNTH_DISCLAIMER_TEMPLATE = (
-    "Resumen generado automáticamente por IA a partir de {n} fuentes; puede contener errores."
+    "Texto sintético generado por IA a partir de {n} medios que cubrieron el mismo "
+    "hecho, para ofrecer un encuadre más balanceado. Solo usa información de esas "
+    "fuentes, pero puede contener errores: contraste con los originales."
+)
+
+# El modelo asigna la clase y la IA explica qué del texto la sustenta: el rótulo
+# nombra las dos partes sin presentar el párrafo como el razonamiento interno
+# del clasificador.
+EXPLANATION_DISCLAIMER = (
+    "Explicación redactada por IA a partir de la clase que asignó el modelo y "
+    "del codebook."
 )
 
 
@@ -51,6 +64,7 @@ def to_list_item(story: Story) -> StoryListItemDTO:
         title=story.title,
         subtitle=rep.subtitle,
         source_name=rep.source_name,
+        source_display_name=source_display_name(rep.source_name),
         source_category=rep.source_category,
         author=rep.author,
         published_at=story.published_at,
@@ -66,6 +80,7 @@ def to_source_dto(article: Article) -> SourceArticleDTO:
     return SourceArticleDTO(
         id=article.id,
         source_name=article.source_name,
+        source_display_name=source_display_name(article.source_name),
         source_category=article.source_category,
         title=article.title,
         snippet=article.snippet,
@@ -73,6 +88,31 @@ def to_source_dto(article: Article) -> SourceArticleDTO:
         author=article.author,
         published_at=article.published_at,
         classification=classification_dto(article),
+    )
+
+
+def _synthesis_classification(story: Story) -> ClassificationDTO | None:
+    data = story.synthesized_classification
+    if not data or not data.get("label") or not data.get("probabilities"):
+        return None
+    return ClassificationDTO(
+        label=data["label"],
+        probabilities=data["probabilities"],
+        model_version=data.get("model_version") or "unknown",
+    )
+
+
+def explanation_dto(article: Article) -> ExplanationDTO | None:
+    """La explicación de la clasificación vigente; None si falta o quedó vieja."""
+    if not is_current(article):
+        return None
+    basis = article.explanation_basis
+    return ExplanationDTO(
+        text=article.explanation_text,
+        classes=[basis["label"], *([basis["second"]] if basis.get("second") else [])],
+        model=article.explanation_model or "unknown",
+        generated_at=article.explanation_generated_at,
+        disclaimer=EXPLANATION_DISCLAIMER,
     )
 
 
@@ -88,10 +128,12 @@ def to_detail(story: Story) -> StoryDetailDTO:
             model=story.synthesized_model or "unknown",
             generated_at=story.synthesized_at,
             disclaimer=SYNTH_DISCLAIMER_TEMPLATE.format(n=len(story.articles)),
+            classification=_synthesis_classification(story),
         )
     return StoryDetailDTO(
         **base.model_dump(),
         keywords=story.keywords or [],
+        explanation=explanation_dto(representative_article(story)),
         synthesized=synthesized,
         sources=[to_source_dto(article) for article in story.articles],
     )

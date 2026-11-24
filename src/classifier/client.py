@@ -1,13 +1,17 @@
 """Cliente del clasificador ideológico.
 
-El clasificador NO vive en este repo: es el modelo de la tesis (repo
-IdeoGraphCO) expuesto como servicio. Aquí solo se consume, detrás de una
-interfaz para poder desarrollar sin el servicio (modo mock).
+El modelo se entrena en el repo IdeoGraphCO y se sirve desde `inference/`
+de este repo, como un servicio aparte (necesita PyTorch). Aquí solo se
+consume, detrás de una interfaz para poder desarrollar sin el servicio
+(modo mock).
 
-Contrato esperado del servicio real (a acordar con IdeoGraphCO):
+Contrato del servicio (inference/api.py):
     POST {CLASSIFIER_API_URL}/classify
     body:     {"title": str, "text": str}
     respuesta: {"label": str, "probabilities": {clase: float x8}, "model_version": str}
+
+    GET {CLASSIFIER_API_URL}/health
+    respuesta: {"status": "ok", "model_version": str}
 """
 
 import hashlib
@@ -35,6 +39,10 @@ class ClassifierClient(Protocol):
         """Devuelve la clasificación o None si el servicio falló."""
         ...
 
+    def current_model_version(self) -> str | None:
+        """Versión del modelo que se está sirviendo, o None si no hay servicio."""
+        ...
+
 
 class MockClassifierClient:
     """Distribuciones deterministas de prueba (desarrollo sin el servicio real).
@@ -44,6 +52,9 @@ class MockClassifierClient:
     """
 
     MODEL_VERSION = "mock-0.1.0"
+
+    def current_model_version(self) -> str | None:
+        return self.MODEL_VERSION
 
     def classify(self, title: str, text: str) -> ClassificationResult | None:
         digest = hashlib.sha256((title + text[:2000]).encode("utf-8")).digest()
@@ -75,6 +86,16 @@ class HttpClassifierClient:
     def __init__(self, base_url: str, timeout_seconds: float = 30.0):
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
+
+    def current_model_version(self) -> str | None:
+        try:
+            response = httpx.get(f"{self._base_url}/health", timeout=self._timeout)
+            response.raise_for_status()
+            version = response.json().get("model_version")
+        except (httpx.HTTPError, ValueError, AttributeError) as e:
+            logger.warning("No se pudo consultar la versión del clasificador: %s", str(e)[:200])
+            return None
+        return version if isinstance(version, str) and version else None
 
     def classify(self, title: str, text: str) -> ClassificationResult | None:
         try:
@@ -110,6 +131,9 @@ class HttpClassifierClient:
 
 class NullClassifierClient:
     """Modo 'off': no clasifica; los artículos quedan pending."""
+
+    def current_model_version(self) -> str | None:
+        return None
 
     def classify(self, title: str, text: str) -> ClassificationResult | None:
         return None

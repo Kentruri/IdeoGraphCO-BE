@@ -83,7 +83,10 @@ def _rss_entry_date(entry) -> datetime | None:
 
 
 def discover_urls_rss(feeds: list[str]) -> list[dict]:
-    """Candidatas desde RSS: [{url, rss_published_at}] en orden del feed.
+    """Candidatas desde RSS: [{url, rss_published_at, title}] en orden del feed.
+
+    El titular del feed lo usa la búsqueda dirigida de la triangulación para
+    comparar candidatas sin descargarlas.
 
     La fecha del feed es la autoritativa del medio — trafilatura a veces
     extrae fechas erróneas de la página (sidebars, artículos relacionados).
@@ -97,7 +100,13 @@ def discover_urls_rss(feeds: list[str]) -> list[dict]:
                 url = entry.get("link", "")
                 if url and url not in seen:
                     seen.add(url)
-                    candidates.append({"url": url, "rss_published_at": _rss_entry_date(entry)})
+                    candidates.append(
+                        {
+                            "url": url,
+                            "rss_published_at": _rss_entry_date(entry),
+                            "title": entry.get("title", ""),
+                        }
+                    )
         except Exception:
             logger.warning("Error parseando RSS %s", feed_url)
     return candidates

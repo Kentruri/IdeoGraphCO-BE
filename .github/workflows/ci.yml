@@ -15,5 +15,5 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r requirements-dev.txt
-      - run: ruff check src tests scripts
+      - run: ruff check src tests scripts inference
       - run: pytest

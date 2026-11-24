@@ -8,7 +8,7 @@ la story agrupa 1..5 artículos de la misma historia y guarda la síntesis
 
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import JSON, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.core.schema import (
@@ -16,6 +16,7 @@ from src.core.schema import (
     STORY_STATUS_INGESTED,
 )
 from src.db.session import Base
+from src.db.types import UTCDateTime
 
 
 def utcnow() -> datetime:
@@ -32,20 +33,24 @@ class Story(Base):
 
     # Fecha de la historia = published_at del artículo representativo
     # (el primero en reportar). Denormalizada para ordenar el listado.
-    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    published_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
 
     representative_article_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     keywords: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
-    # Síntesis (Fase 3) — nullable hasta que exista y solo con ≥3 fuentes
+    # Síntesis triangulada (Fase 3, src/triangulation): nullable hasta que
+    # exista y solo con ≥3 medios del mismo hecho
     synthesized_title: Mapped[str | None] = mapped_column(Text, nullable=True)
     synthesized_body: Mapped[list | None] = mapped_column(JSON, nullable=True)  # list[str]
     synthesized_model: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    synthesized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    synthesized_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # Clasificación de la síntesis con el mismo modelo que la original
+    # ({label, probabilities, model_version}), para comparar encuadres.
+    synthesized_classification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+        UTCDateTime(), default=utcnow, onupdate=utcnow
     )
 
     articles: Mapped[list["Article"]] = relationship(
@@ -84,8 +89,8 @@ class Article(Base):
     reading_time_minutes: Mapped[int] = mapped_column(default=1)
     image_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
-    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    scraped_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    published_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    scraped_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
     # Clasificación ideológica propia (servicio externo IdeoGraphCO)
     classification_status: Mapped[str] = mapped_column(
@@ -95,7 +100,21 @@ class Article(Base):
     classification_probabilities: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     classification_model_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Explicación de la clasificación en lenguaje natural (src/explanation). La
+    # redacta un LLM a partir del texto, la distribución y el codebook; no es el
+    # razonamiento del clasificador. Se escribe una vez por clasificación:
+    # `explanation_basis` guarda cuál ({label, second, model_version}) y, si el
+    # artículo se reclasifica, la API deja de servirla hasta que se rehaga.
+    explanation_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    explanation_basis: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Cuánto apoya el texto cada clase explicada, según el LLM ({clase: alto|medio|bajo}).
+    explanation_support: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    explanation_model: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    explanation_generated_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime(), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
     story: Mapped[Story] = relationship(back_populates="articles")
 
@@ -112,4 +131,4 @@ class SkippedUrl(Base):
 
     url: Mapped[str] = mapped_column(String(1000), primary_key=True)
     reason: Mapped[str] = mapped_column(String(40))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)

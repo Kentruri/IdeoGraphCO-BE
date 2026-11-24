@@ -13,7 +13,7 @@ GitHub Actions (cron cada 6h + botón manual "Run workflow")
         │  scripts/ingest.py
         ▼
 Ingesta: RSS/sitemaps de medios CO → trafilatura → limpieza → filtro
-politicidad (Gemini) → clasificador (servicio IdeoGraphCO) → Postgres
+politicidad (Gemini) → clasificador (servicio inference/) → Postgres
         │
         ▼
 Supabase Postgres (stories + articles)
@@ -22,8 +22,9 @@ Supabase Postgres (stories + articles)
 FastAPI (Hugging Face Spaces) ──► IdeoGraphCO-FE (Next.js)
 ```
 
-- **stories**: la unidad navegable (agrupa 1..5 artículos de la misma
-  historia; en Fase 3 guarda la noticia sintetizada por LLM).
+- **stories**: la unidad navegable (agrupa 1..5 artículos de medios
+  distintos sobre el mismo hecho; con ≥3 guarda la versión triangulada que
+  redacta el LLM y su clasificación).
 - **articles**: cada artículo real de un medio, con su **propia**
   clasificación (label + distribución softmax de 8 clases + model_version).
 - El texto completo de los artículos es **solo interno** (clasificación /
@@ -44,7 +45,7 @@ uvicorn src.api.app:app --reload --port 8000
 # → http://localhost:8000/api/v1/stories  ·  /docs para el swagger
 
 # Tests y lint
-pytest && ruff check src tests scripts
+pytest && ruff check src tests scripts inference
 ```
 
 ## Pipeline de ingesta
@@ -57,23 +58,69 @@ pytest && ruff check src tests scripts
 2. **Dedup idempotente**: por URL (`articles.url` UNIQUE) y por hash de
    contenido (cables de agencia republicados). Re-correr el cron no duplica.
 3. **Extracción** con trafilatura + limpieza regex (CTAs, paywalls, firmas).
+   Si una fuente acumula 5 extracciones fallidas seguidas (HTML vacío,
+   protección anti-bots), la corrida pasa a la siguiente fuente.
 4. **Filtro de politicidad** (Gemini free tier, con escalado automático
    flash-lite → flash). Sin `GEMINI_API_KEY` se salta.
 5. **Clasificación ideológica** llamando al servicio externo
    (`CLASSIFIER_MODE=http`) o al mock determinista (`mock`, default). Si el
    servicio falla, el artículo queda `pending` y se reintenta en la
    siguiente corrida; la story no se publica hasta clasificar.
-6. **Persistencia**: hoy (Fase 1) cada artículo crea su story de fuente
-   única. La Fase 2 agrega el clustering multi-fuente y la Fase 3 la
-   síntesis LLM.
+6. **Persistencia**: cada artículo crea su story de fuente única; la
+   triangulación (abajo) las reúne después.
+7. **Explicación de la clasificación** (opcional): con
+   `EXPLANATION_MODE=claude_cli`, al final de la corrida un LLM escribe la
+   explicación de cada noticia nueva (ver abajo). Por defecto (`off`) no se
+   hace y quedan para `scripts/explicar.py`.
+
+## Triangulación (Fases 2 y 3)
+
+Corre sola al final de cada ingesta (`scripts/ingest.py`, también en el
+cron) y se puede lanzar aparte con `scripts/triangular.py`:
+
+0. **Buscar coberturas** (`src/triangulation/search.py`): para las noticias
+   recientes que aún no reúnen 3 medios, compara su titular con las
+   candidatas de los RSS y mapas de sitio de todo el catálogo (titular del
+   RSS o palabras del slug, sin descargar), con coseno ≥ 0,3, al menos 2
+   palabras en común, otro medio y ±72 h. Solo las que coinciden se
+   descargan y pasan por la ingesta normal (`ingest_urls`: robots, filtro de
+   politicidad y clasificación). Así la triangulación no depende de que dos
+   medios coincidan por azar en las últimas notas que trae la ingesta.
+1. **Agrupar** (`src/triangulation/clustering.py`): TF-IDF de titular (doble
+   peso) + subtítulo + entradilla (900 caracteres), coseno ≥ 0,25, ventana de
+   48 h, un artículo por medio, máximo 5, enlace medio para no encadenar
+   hechos distintos. Solo se fusionan grupos de ≥3 medios (un par suelto del
+   mismo tema no prueba que sea el mismo hecho). Los grupos existentes solo
+   crecen. La story destino es
+   la del primer medio en reportar, que sigue siendo la noticia clasificada.
+2. **Sintetizar** (`src/triangulation/synthesis.py`, Gemini 2.5 Flash): con
+   ≥3 medios, el LLM primero confirma qué fuentes tratan del mismo hecho
+   (`same_event_sources`) y redacta solo con esas: hechos de las fuentes,
+   atribución por medio, versiones contradictorias lado a lado, sin
+   adjetivos valorativos. Las fuentes que no confirme vuelven a su propia
+   story. Respuestas cortas o sin la noticia original se descartan y se
+   reintentan en la corrida siguiente.
+3. **Clasificar la síntesis** con el mismo modelo
+   (`stories.synthesized_classification`) para mostrarla junto a la
+   original, sin afirmar que sea "menos sesgada".
+
+```bash
+python scripts/triangular.py --dry-run        # coincidencias y grupos, sin tocar la BD
+python scripts/triangular.py --no-search      # solo con lo que ya está en la BD
+python scripts/triangular.py --no-synthesis   # buscar y agrupar, sin LLM
+python scripts/ingest.py --no-triangulation   # ingesta sin triangular
+```
+
+Sin `GEMINI_API_KEY` busca y agrupa, pero no filtra lo descargado ni sintetiza.
 
 ## Endpoints
 
 | Ruta | Descripción |
 |---|---|
-| `GET /api/v1/stories?page&page_size&source_category&q` | Listado paginado (solo publicadas) |
-| `GET /api/v1/stories/{slug}` | Detalle: representativo + `synthesized` (nullable) + `sources[]` |
+| `GET /api/v1/stories?page&page_size&source_category&ideology&published_from&published_to&q` | Listado paginado (solo publicadas), con filtros opcionales (ver `CONTRACT.md`) |
+| `GET /api/v1/stories/{slug}` | Detalle: representativo + `explanation` (nullable) + `synthesized` (nullable) + `sources[]` |
 | `GET /api/v1/health` | Health check |
+| `POST /api/v1/classify` | Mesa de redacción: clasifica sin guardar. Con `GEMINI_API_KEY` pasa antes por el filtro de politicidad (422 `not_political` si no es del dominio); sin ella, confía en el usuario |
 
 ## Despliegue gratuito
 
@@ -84,18 +131,163 @@ pytest && ruff check src tests scripts
    de noticias* → *Run workflow*). Secrets: `DATABASE_URL`, `GEMINI_API_KEY`.
 3. **API en Hugging Face Spaces** (Docker Space con
    `uvicorn src.api.app:app --host 0.0.0.0 --port 7860`), env
-   `DATABASE_URL` + `CORS_ORIGINS` con el dominio del FE.
-4. Cuando exista el servicio de inferencia de IdeoGraphCO: variables
-   `CLASSIFIER_MODE=http` y `CLASSIFIER_API_URL`.
+   `DATABASE_URL` + `CORS_ORIGINS` con el dominio del FE. `GEMINI_API_KEY`
+   es opcional: activa el filtro de politicidad de la mesa de redacción.
+4. Servicio de inferencia (sección siguiente) en otro host con PyTorch;
+   la ingesta lo usa con `CLASSIFIER_MODE=http` y `CLASSIFIER_API_URL`.
+
+## Servicio de inferencia
+
+`inference/` sirve el clasificador entrenado en el repo IdeoGraphCO. Va
+aparte de la API de lectura porque necesita PyTorch (`inference/requirements.txt`,
+con las mismas versiones del entrenamiento).
+
+```bash
+# 1. Exportar el checkpoint de Lightning a un artefacto autodescrito (~420 MB)
+python -m inference.export_checkpoint \
+    --checkpoint ../IdeoGraphCO/logs/checkpoints/cribado/beto__seed42/best.ckpt \
+    --metrics ../IdeoGraphCO/logs/benchmark/cribado/beto__seed42/metrics.json \
+    --model-version beto-cribado-s42 --out models/beto-cribado-s42
+
+# 2. Levantar el servicio
+IDEOGRAPH_ARTIFACT=models/beto-cribado-s42 uvicorn inference.api:app --port 8080
+
+# 3. Ingestar clasificando con el modelo real
+CLASSIFIER_MODE=http CLASSIFIER_API_URL=http://localhost:8080 \
+    python scripts/ingest.py --sources lasillavacia --max-per-source 2 --no-filter
+```
+
+El artefacto guarda el troceo y el orden de clases del checkpoint, y el
+predictor verifica el orden contra `src/core/schema.py` al cargar
+(reglas 1 y 3 de `docs/traspaso-inferencia-BE.md` en IdeoGraphCO). La
+entrada se compone con `inference/model_input.py`, copia literal de la del
+entrenamiento (regla 2). `models/` no se versiona.
+
+**Modelo provisional:** `beto-cribado-s42` es BETO del cribado (una
+semilla, 5.000 artículos de entrenamiento, F1 Macro de validación 0,752).
+Sirve para construir el prototipo; se reemplaza exportando el modelo
+seleccionado del benchmark oficial con otra `--model-version`.
+
+### Cambiar de modelo y reclasificar lo guardado
+
+Cada artículo guarda la `model_version` que emitió su clasificación, y la
+ingesta solo clasifica artículos nuevos o pendientes. Al cambiar de modelo,
+lo ya guardado se pone al día con `scripts/reclasificar.py`:
+
+```bash
+# 1. Exportar el modelo elegido con una versión NUEVA (es lo que distingue
+#    lo viejo de lo nuevo; nunca reutilizar una --model-version)
+python -m inference.export_checkpoint \
+    --checkpoint ../IdeoGraphCO/logs/checkpoints/<experimento>/<modelo>/best.ckpt \
+    --metrics ../IdeoGraphCO/logs/benchmark/<experimento>/<modelo>/metrics.json \
+    --model-version <modelo-final> --out models/<modelo-final>
+
+# 2. Servirlo (reiniciar el servicio con el artefacto nuevo)
+IDEOGRAPH_ARTIFACT=models/<modelo-final> uvicorn inference.api:app --port 8080
+
+# 3. Contar cuánto hay que reclasificar (no llama al modelo ni cambia nada)
+CLASSIFIER_MODE=http CLASSIFIER_API_URL=http://localhost:8080 \
+    python scripts/reclasificar.py --dry-run
+
+# 4. Reclasificar
+CLASSIFIER_MODE=http CLASSIFIER_API_URL=http://localhost:8080 \
+    python scripts/reclasificar.py
+```
+
+El comando le pregunta al servicio su versión (`GET /health`), toma los
+artículos clasificados con cualquier otra y los vuelve a clasificar con el
+mismo cliente de la ingesta, guardando clase, distribución y versión nueva.
+Las stories publicadas muestran de inmediato la clasificación nueva de su
+representativo. Al final informa cuántos cambiaron de clase y entre cuáles.
+
+- **Por lotes y retomable**: guarda cada lote (`--batch-size`, 50 por
+  defecto); si se corta, al volver a correrlo sigue con lo que falta.
+  `--limit N` reparte el trabajo en varias corridas.
+- **Fallos**: si el servicio no responde para un artículo, este conserva su
+  clasificación anterior (la story sigue publicada) y queda para la próxima
+  corrida; con 3 fallos seguidos se detiene. Si el servicio cambia de modelo
+  a mitad de corrida, también se detiene sin mezclar versiones.
+- **Pendientes**: los artículos sin clasificar no los toca; los reintenta la
+  ingesta.
+- Sale con código 1 si se detuvo o quedaron fallos, y 0 si terminó.
+
+Con el mock (`CLASSIFIER_MODE=mock`, versión `mock-0.1.0`) se puede probar
+sin el servicio: reclasifica todo lo que no esté en `mock-0.1.0`.
+
+Después de reclasificar hay que correr `scripts/explicar.py`: la API no sirve
+una explicación escrita para otra clasificación (ver la sección siguiente).
+
+## Explicación de la clasificación
+
+El detalle de cada noticia trae `explanation`: un párrafo de 3 o 4 frases que
+dice qué elementos del texto corresponden a la clase predicha y, si la segunda
+clase llega al 20 % (`EXPLANATION_SECOND_MIN_PROBABILITY`), también a esa
+(`src/explanation`). Lo redacta un LLM a partir del titular y el texto que leyó
+el clasificador, la distribución que devolvió y el codebook de las ocho clases
+(`src/explanation/codebook.py`, copia del de IdeoGraphCO con una prueba de
+paridad).
+
+**No es el razonamiento del clasificador**: BETO no se explica a sí mismo y el
+LLM no sabe qué miró. La API la entrega con un `disclaimer` que lo dice y el FE
+lo muestra siempre. El prompt pide lenguaje neutral (encuadre del texto, sin
+juicios sobre la veracidad, el medio o los periodistas), decir que el texto
+apoya poco la clase cuando es así, parafrasear y no llamar «confianza» a la
+probabilidad. Lo que se puede comprobar con código se valida antes de guardar:
+largo, porcentajes, la palabra «confianza», razonamientos atribuidos al
+modelo, citas de más de 8 palabras, frases de 12 palabras copiadas de la nota
+y que nombre las clases que explica. Una respuesta que no cumple se pide otra
+vez una sola vez, diciendo qué regla falló.
+
+El LLM es Claude por `claude -p` (Claude Code en modo no interactivo, con la
+suscripción del usuario): sin herramientas, con su propio system prompt, en
+`--safe-mode` (sin CLAUDE.md, hooks ni MCP) y desde una carpeta temporal
+vacía. Cada llamada gasta cuota de la suscripción: en el piloto, con
+`claude-opus-5-5`, unos 0,17 USD por noticia a precio de API (la mayor parte
+es razonamiento del modelo).
+
+`EXPLANATION_MODEL` lleva el id completo (`claude-opus-5-5`) y no un alias,
+porque el alias depende de la versión del CLI: en la 2.1.270, `opus` es
+todavía `claude-opus-5`, y `claude-opus-5-5` pide la 2.1.280 o más nueva
+(`claude update`). `CLAUDE_BIN` permite usar otro binario de `claude`.
+
+```bash
+# Cuántas faltan (no llama al LLM)
+python scripts/explicar.py --dry-run
+
+# Piloto: una noticia o las 3 primeras, mostrando el texto
+python scripts/explicar.py --slug <slug-de-la-story> --show
+python scripts/explicar.py --limit 3 --show
+
+# Todas las que faltan, 3 llamadas en paralelo
+python scripts/explicar.py --concurrency 3
+```
+
+- **Una vez por clasificación**: cada artículo guarda su explicación, el LLM
+  que la escribió y para qué clasificación (`explanation_basis`: clase,
+  segunda clase y versión del modelo). Volver a correr el comando solo hace
+  las que faltan: las nuevas y las de artículos reclasificados, que la API
+  deja en `null` hasta rehacerlas. `--force` las rehace todas.
+- **Primero lo visible**: empieza por el representativo de cada story
+  publicada, de lo más reciente a lo más antiguo; después las demás fuentes.
+- **Fallos**: un artículo que falla queda sin explicación y se reintenta en la
+  próxima corrida. Si Claude avisa de límite de uso o falta de sesión, o
+  fallan 3 seguidos, se detiene. Al final informa las llamadas hechas y su
+  costo equivalente a precio de API.
+- **Ingestas nuevas**: con `EXPLANATION_MODE=claude_cli` en `.env`,
+  `scripts/ingest.py` explica al terminar lo que trajo (se salta con
+  `--no-explanations`). El cron de GitHub Actions no tiene `claude`, así que
+  allí queda en `off` y se rellenan después con `scripts/explicar.py`.
+- `explanation_support` guarda, por clase explicada, cuánto apoya el texto esa
+  clase según el LLM (alto, medio o bajo). No se publica en la API: sirve para
+  revisar las explicaciones con apoyo bajo. No es una validación del
+  clasificador.
 
 ## Roadmap
 
-- **Fase 2 — Triangulación**: clustering de "misma historia" (embeddings de
-  título+lead, ventana 24–48h, entidades compartidas), validado contra los
-  events de Event Registry (free tokens) y una muestra manual. GDELT como
-  ampliador de fuentes.
-- **Fase 3 — Síntesis**: noticia neutral generada con Gemini a partir de
-  ≥3 fuentes, una sola vez por story, siempre etiquetada como generada por
-  IA (ver disclaimer en el contrato).
+- **Triangulación**: validar el agrupamiento contra una muestra anotada a
+  mano (precisión y cobertura de los grupos) y evaluar si embeddings o
+  entidades compartidas mejoran el TF-IDF. GDELT como ampliador de fuentes.
+- **Síntesis**: rehacerla cuando un grupo gane fuentes (hoy se borra y se
+  regenera en la corrida siguiente) y medir su fidelidad a las fuentes.
 - **Manual**: endpoint autenticado para enviar texto/URL → clasificar →
   guardar (el flujo manual del prototipo).

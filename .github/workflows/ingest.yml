@@ -1,8 +1,13 @@
-# Cron de ingesta + trigger manual (workflow_dispatch).
+# Cron de ingesta + triangulación, y trigger manual (workflow_dispatch).
+#
+# Al terminar la ingesta, scripts/ingest.py triangula solo: busca otras
+# coberturas de las noticias recientes en el catálogo, agrupa el mismo hecho
+# y, con ≥3 medios, redacta la versión triangulada (src/triangulation).
 #
 # Secrets requeridos en el repo:
 #   DATABASE_URL     — URL del Session Pooler de Supabase (postgresql+psycopg://…)
-#   GEMINI_API_KEY   — para el filtro de politicidad (opcional; sin ella se salta)
+#   GEMINI_API_KEY   — filtro de politicidad y versión triangulada (opcional;
+#                      sin ella no se filtra ni se sintetiza, pero sí se agrupa)
 # Variables opcionales:
 #   CLASSIFIER_MODE / CLASSIFIER_API_URL — cuando exista el servicio de IdeoGraphCO
 
@@ -24,6 +29,10 @@ on:
         required: false
       no_filter:
         description: "Saltar filtro LLM de politicidad"
+        type: boolean
+        default: false
+      no_triangulation:
+        description: "Saltar la triangulación al terminar"
         type: boolean
         default: false
 
@@ -56,6 +65,7 @@ jobs:
           INPUT_MAX_PER_SOURCE: ${{ github.event.inputs.max_per_source || '5' }}
           INPUT_SOURCES: ${{ github.event.inputs.sources || '' }}
           INPUT_NO_FILTER: ${{ github.event.inputs.no_filter || 'false' }}
+          INPUT_NO_TRIANGULATION: ${{ github.event.inputs.no_triangulation || 'false' }}
         run: |
           ARGS=(--max-per-source "$INPUT_MAX_PER_SOURCE")
           if [ -n "$INPUT_SOURCES" ]; then
@@ -64,5 +74,8 @@ jobs:
           fi
           if [ "$INPUT_NO_FILTER" = "true" ]; then
             ARGS+=(--no-filter)
+          fi
+          if [ "$INPUT_NO_TRIANGULATION" = "true" ]; then
+            ARGS+=(--no-triangulation)
           fi
           python scripts/ingest.py "${ARGS[@]}"
