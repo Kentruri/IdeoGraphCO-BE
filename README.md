@@ -121,6 +121,8 @@ Sin `GEMINI_API_KEY` busca y agrupa, pero no filtra lo descargado ni sintetiza.
 | `GET /api/v1/stories/{slug}` | Detalle: representativo + `explanation` (nullable) + `synthesized` (nullable) + `sources[]` |
 | `GET /api/v1/health` | Health check |
 | `POST /api/v1/classify` | Mesa de redacción: clasifica sin guardar. Con `GEMINI_API_KEY` pasa antes por el filtro de politicidad (422 `not_political` si no es del dominio); sin ella, confía en el usuario |
+| `POST /api/v1/explain` | Mesa de redacción: clasifica y transmite la explicación en vivo (SSE), sin guardar. Solo con `DESK_EXPLANATION_MODE=claude_cli` (si no, 503) |
+| `POST /api/v1/explanation-reviews` | Guarda la ficha de revisión de una explicación en vivo. Misma condición que `/explain` |
 
 ## Despliegue gratuito
 
@@ -264,7 +266,7 @@ python scripts/explicar.py --concurrency 3
 
 - **Una vez por clasificación**: cada artículo guarda su explicación, el LLM
   que la escribió y para qué clasificación (`explanation_basis`: clase,
-  segunda clase y versión del modelo). Volver a correr el comando solo hace
+  segunda clase, versión del modelo y versión de los prompts). Volver a correr el comando solo hace
   las que faltan: las nuevas y las de artículos reclasificados, que la API
   deja en `null` hasta rehacerlas. `--force` las rehace todas.
 - **Primero lo visible**: empieza por el representativo de cada story
@@ -281,6 +283,64 @@ python scripts/explicar.py --concurrency 3
   clase según el LLM (alto, medio o bajo). No se publica en la API: sirve para
   revisar las explicaciones con apoyo bajo. No es una validación del
   clasificador.
+
+## Explicación en vivo en la mesa de redacción
+
+La mesa de redacción (`POST /api/v1/classify`) devuelve la clase y la
+distribución al instante. Con `DESK_EXPLANATION_MODE=claude_cli`, además puede
+pedir la explicación de esa clasificación y verla mientras se escribe:
+`POST /api/v1/explain` recibe el mismo cuerpo, clasifica el texto por su cuenta
+y transmite la explicación por Server-Sent Events (contrato en `CONTRACT.md`).
+No guarda nada.
+
+- **El mismo LLM que en lotes**: `claude -p` con la suscripción del usuario,
+  los mismos prompts y la misma validación de `src/explanation`, ahora con
+  `--output-format stream-json --include-partial-messages`
+  (`src/explanation/stream.py`). Con `--json-schema`, `claude -p` entrega la
+  salida estructurada como una llamada a la herramienta `StructuredOutput`
+  cuyo JSON llega a trozos; el BE decodifica de ese JSON parcial el valor de
+  `explanation` y lo manda en eventos `delta`.
+- **Validada antes de mostrarla como final**: el evento `explanation` sale solo
+  si la respuesta pasa `parse_explanation`. Si rompe una regla, llega `retry`
+  con la regla, la mesa borra el borrador y `claude -p` lo intenta otra vez.
+- **Una a la vez y sin gastar de más**: un segundo pedido simultáneo recibe
+  `error` `busy` (el turno es por proceso: corre el BE con un solo worker de
+  uvicorn). Si el cliente corta la conexión (botón Detener o pestaña cerrada),
+  el BE mata el grupo de procesos de `claude -p` al terminar la respuesta y
+  suelta el turno; lo hace una dependencia de FastAPI (`desk_turn`), porque
+  FastAPI no cierra el generador del endpoint cuando el cliente se va.
+- **Configuración**: `DESK_EXPLANATION_MODEL` (vacío = `EXPLANATION_MODEL`),
+  `CLAUDE_BIN`, `EXPLANATION_EFFORT` y `EXPLANATION_TIMEOUT_SECONDS`. Con
+  `claude-opus-5-5`, cada explicación tarda de 20 a 60 s y gasta unos 0,17 USD
+  de cuota a precio de API. `GET /api/v1/health` dice si está activa
+  (`desk_explanations`), y la mesa solo ofrece el botón en ese caso.
+
+```bash
+DESK_EXPLANATION_MODE=claude_cli CLASSIFIER_MODE=http CLASSIFIER_API_URL=http://localhost:8080 \
+    uvicorn src.api.app:app --port 8000
+```
+
+### Ficha de revisión
+
+Cuando la explicación termina, la mesa llena una ficha con su salida
+estructurada: el apoyo que la IA le da a cada clase (alto, medio o bajo) y el
+párrafo, los dos editables. Quien revisa dice si la explicación se ajusta al
+texto y si el lenguaje es neutral, y la guarda con
+`POST /api/v1/explanation-reviews` en la tabla `explanation_reviews`. Sirve
+para revisar a mano la calidad de las explicaciones: la neutralidad del tono
+no se puede comprobar con código.
+
+La ficha se valida dos veces: en el FE con Zod antes de enviarla, y aquí con
+Pydantic (`ExplanationReviewRequestDTO`). Es lo único de la mesa que guarda el
+texto pegado, y solo cuando alguien guarda la ficha.
+
+### Versión de los prompts
+
+`EXPLANATION_PROMPT_VERSION` (`src/explanation/prompts.py`) se guarda con cada
+explicación (en `explanation_basis`) y con cada ficha, y la API la devuelve
+como `prompt_version`. Una prueba fija la huella SHA-256 del system prompt, el
+codebook que lleva adentro, la plantilla del prompt del usuario y el esquema de
+la respuesta: si alguno cambia sin subir la versión, la prueba falla.
 
 ## Roadmap
 

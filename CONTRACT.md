@@ -1,4 +1,4 @@
-# Contrato BE ↔ FE — v2 (2026-07-29; `/classify` con filtro de dominio y filtros del listado, 2026-11-04; explicación de la clasificación, 2026-11-10)
+# Contrato BE ↔ FE — v2 (2026-07-29; `/classify` con filtro de dominio y filtros del listado, 2026-11-04; explicación de la clasificación, 2026-11-10; explicación en vivo y fichas de revisión, 2026-11-18)
 
 Contrato de datos entre **IdeoGraphCO-BE** (este repo) e **IdeoGraphCO-FE**.
 Todos los campos van en `snake_case`.
@@ -126,6 +126,7 @@ Detalle completo. Los errores usan el formato estándar de FastAPI:
     "text": "La nota presenta … (3 o 4 frases)",
     "classes": ["globalismo", "personalismo"],  // la predicha y, si llega al 20 %, la segunda
     "model": "claude-opus-5-5",           // LLM que la redactó
+    "prompt_version": "1",                // versión de los prompts; null en las escritas antes de guardarla
     "generated_at": "2026-11-10T21:00:00Z",
     "disclaimer": "Explicación redactada por IA a partir de la clase que asignó el modelo y del codebook."
   },
@@ -159,7 +160,10 @@ Detalle completo. Los errores usan el formato estándar de FastAPI:
 
 ### `GET /api/v1/health`
 
-`{ "status": "ok", "version": "0.1.0" }`
+`{ "status": "ok", "version": "0.1.0", "desk_explanations": false }`
+
+`desk_explanations` dice si la mesa puede ofrecer la explicación en vivo
+(`DESK_EXPLANATION_MODE=claude_cli`). El FE solo muestra el botón si es `true`.
 
 ### `POST /api/v1/classify`
 
@@ -204,6 +208,88 @@ caracteres). Tres casos:
 
 El FE distingue los dos 422 por `code === "not_political"`.
 
+### `POST /api/v1/explain` (Server-Sent Events)
+
+Explicación en vivo de la mesa de redacción. Recibe lo mismo que `/classify`,
+clasifica el texto por su cuenta (nunca explica una clasificación que mande el
+cliente) y transmite la explicación mientras `claude -p` la escribe. No guarda
+nada. Atiende una explicación a la vez (por proceso del BE, que corre con un solo
+worker).
+
+Antes de abrir el stream:
+
+- 422 de validación, con el formato estándar de FastAPI (como `/classify`).
+- 503 `{ "detail": "La explicación en vivo no está activa en este servidor (DESK_EXPLANATION_MODE=off).", "code": "explanations_disabled" }`.
+
+Si no, `200 text/event-stream`. Cada evento es una línea `event:` y una línea
+`data:` con JSON:
+
+| Evento | `data` | Cuándo |
+|---|---|---|
+| `classification` | ClassificationDTO + `political_filter`, igual que la respuesta 200 de `/classify` | Primero, si el texto se pudo clasificar |
+| `status` | `{ "phase": "thinking" }` o `{ "phase": "writing" }` | El LLM empezó a razonar o a escribir. Se repite en cada intento |
+| `delta` | `{ "text": "La nota " }` | Caracteres nuevos del párrafo, en orden |
+| `retry` | `{ "reason": "copió una frase de la nota (12 palabras seguidas o más)" }` | El borrador mostrado se descarta y viene otro intento: una regla rota (una vez como máximo) o una respuesta que `claude -p` rechazó por el esquema |
+| `explanation` | ver abajo | Al final: la salida estructurada, validada en el servidor |
+| `error` | `{ "code": "busy", "detail": "texto para mostrar", "category": null, "reason": null }` | Termina el stream sin explicación |
+
+```jsonc
+// evento explanation
+{ "text": "La nota presenta el resultado electoral (3 o 4 frases)",
+  "classes": ["globalismo", "personalismo"],   // la predicha y, si llega al 20 %, la segunda
+  "support": { "globalismo": "medio", "personalismo": "bajo" },  // lectura del LLM, no acierto del clasificador
+  "model": "claude-opus-5-5",
+  "prompt_version": "1",
+  "disclaimer": "Explicación redactada por IA a partir de la clase que asignó el modelo y del codebook." }
+```
+
+Códigos de `error`:
+
+- `busy`: ya hay una explicación en curso.
+- `not_political`: el filtro de politicidad rechazó el texto (solo con `GEMINI_API_KEY`). Trae `category` y `reason`.
+- `classifier_unavailable`: el clasificador no respondió.
+- `explainer_unavailable`: no hay binario `claude`, no hay sesión o se acabó la cuota.
+- `explanation_failed`: las dos redacciones rompieron una regla, o `claude -p` falló o superó el tiempo. `reason` dice cuál.
+
+El `text` del evento final es el párrafo limpio (sin rayas y en un solo
+párrafo) y puede diferir un poco de la suma de los `delta`: el FE lo reemplaza
+al llegar. Mientras no hay eventos, el stream manda comentarios `: ping` cada
+15 s. Si el cliente corta la conexión, el BE mata el proceso de `claude -p`.
+`EventSource` solo hace GET, así que el FE lee el stream con `fetch`.
+
+### `POST /api/v1/explanation-reviews`
+
+Ficha de revisión de una explicación en vivo. Responde 503
+`explanations_disabled` igual que `/explain`. Es lo único de la mesa que guarda
+el texto pegado, y solo cuando alguien guarda la ficha.
+
+```jsonc
+// request
+{ "title": "Reforma aprobada",       // opcional (máx. 300)
+  "text": "texto que se explicó",    // 40 a 30.000 caracteres
+  "classification": { "label": "globalismo", "probabilities": { /* 8 clases */ },
+                      "model_version": "beto-cribado-s42" },
+  "explanation": {                   // el evento explanation tal como llegó
+    "text": "párrafo", "classes": ["globalismo", "personalismo"],
+    "support": { "globalismo": "medio", "personalismo": "bajo" },
+    "model": "claude-opus-5-5", "prompt_version": "1" },
+  "review": {                        // lo que decide quien revisa
+    "support": { "globalismo": "alto", "personalismo": "bajo" },  // llega prellenado con explanation.support
+    "revised_text": "párrafo corregido",   // opcional (máx. 2.000); vacío cuenta como null
+    "fits_text": "en_parte",               // si | en_parte | no
+    "neutral": true,
+    "notes": "comentario" } }              // opcional (máx. 500)
+
+// 201
+{ "id": "3f2a9c0e5b7d4e1fa6c8b2d9e0f1a3b4", "created_at": "2026-11-18T15:00:00Z" }
+```
+
+422 (formato estándar de FastAPI) si `probabilities` no trae las 8 clases, una
+sale del rango de 0 a 1 o no suman 1 (tolerancia 0,01); si la primera clase
+explicada no es la predicha; si hay una clase desconocida o repetida; si
+`explanation.support` o `review.support` no califican exactamente cada clase
+explicada; si un nivel no es alto, medio o bajo, o si un largo se pasa.
+
 ## Reglas de renderizado para el FE
 
 1. El cuerpo principal del detalle es siempre la noticia original: el
@@ -223,6 +309,10 @@ El FE distingue los dos 422 por `code === "not_political"`.
    visible. Si es `null` no se muestra nada en su lugar. Explica la
    clasificación del detalle (la del representativo), no la de las demás
    fuentes. Solo la trae el detalle, no el listado.
+6. La explicación en vivo de la mesa sigue la regla 5: el `disclaimer` va
+   siempre visible y el borrador que llega en `delta` se reemplaza por
+   `explanation.text` al final. `support` solo aparece en la ficha de
+   revisión, rotulado como la lectura de la IA.
 
 ## Diferencias vs. el mock actual del FE (migración)
 

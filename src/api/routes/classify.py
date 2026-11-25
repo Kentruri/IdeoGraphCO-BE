@@ -17,8 +17,9 @@ Filtro de dominio opcional (ver `src/classifier/domain_filter.py`):
 """
 
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -48,6 +49,36 @@ def get_domain_filter() -> DomainFilter:
     return build_domain_filter(get_settings())
 
 
+@dataclass(frozen=True)
+class Screening:
+    """Qué dijo el filtro de politicidad de la mesa antes de clasificar."""
+
+    # "rejected" nunca llega a la respuesta: la ruta corta antes de clasificar.
+    political_filter: Literal["disabled", "passed", "unavailable", "rejected"]
+    # Veredicto del filtro si rechazó el texto (no es una noticia política).
+    rejected: DomainVerdict | None = None
+
+
+def screen_text(domain_filter: DomainFilter, text: str) -> Screening:
+    """El filtro de dominio de la mesa, compartido por /classify y /explain."""
+    if not domain_filter.enabled:
+        return Screening("disabled")  # sin clave: ni se llama al filtro
+    # Solo el cuerpo, como en la ingesta: el corpus pasó el filtro así.
+    verdict = domain_filter.check(text)
+    if verdict is None:
+        logger.warning("Mesa de redacción: el filtro de politicidad falló, se clasifica sin él")
+        return Screening("unavailable")
+    if not verdict.is_political:
+        logger.info(
+            "Mesa de redacción: texto rechazado por el filtro (%s, %.2f): %s",
+            verdict.category,
+            verdict.confidence or 0.0,
+            verdict.reason,
+        )
+        return Screening("rejected", rejected=verdict)
+    return Screening("passed")
+
+
 @router.post(
     "/classify",
     response_model=ClassifyResponseDTO,
@@ -58,19 +89,9 @@ def classify(
     classifier: Annotated[ClassifierClient, Depends(get_classifier_client)],
     domain_filter: Annotated[DomainFilter, Depends(get_domain_filter)],
 ):
-    political_filter = "disabled"  # sin clave: ni se llama al filtro
-    if domain_filter.enabled:
-        # Solo el cuerpo, como en la ingesta: el corpus pasó el filtro así.
-        verdict = domain_filter.check(body.text)
-        if verdict is None:
-            logger.warning(
-                "Mesa de redacción: el filtro de politicidad falló, se clasifica sin él"
-            )
-            political_filter = "unavailable"
-        elif not verdict.is_political:
-            return _not_political_response(verdict)
-        else:
-            political_filter = "passed"
+    screening = screen_text(domain_filter, body.text)
+    if screening.rejected is not None:
+        return _not_political_response(screening.rejected)
 
     result = classifier.classify(body.title, body.text)
     if result is None:
@@ -84,17 +105,11 @@ def classify(
         label=result.label,
         probabilities=result.probabilities,
         model_version=result.model_version,
-        political_filter=political_filter,
+        political_filter=screening.political_filter,
     )
 
 
 def _not_political_response(verdict: DomainVerdict) -> JSONResponse:
-    logger.info(
-        "Mesa de redacción: texto rechazado por el filtro (%s, %.2f): %s",
-        verdict.category,
-        verdict.confidence or 0.0,
-        verdict.reason,
-    )
     error = NotPoliticalErrorDTO(
         detail=NOT_POLITICAL_DETAIL,
         category=verdict.category,
